@@ -1,0 +1,11 @@
+@model string
+@{ ViewData["Title"] = "Authorization error"; }
+<div class="auth-wrap">
+<section class="auth-card">
+    <div class="auth-mark is-danger" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 7v6M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+    <h1 class="auth-title">Cannot authorize</h1>
+    <p class="auth-sub">The authorization request was rejected before redirecting.</p>
+    <div class="banner is-danger" role="alert"><span class="banner-text">@Model</span></div>
+    <p class="help">Return to your application and start a new authorization request.</p>
+</section>
+</div>

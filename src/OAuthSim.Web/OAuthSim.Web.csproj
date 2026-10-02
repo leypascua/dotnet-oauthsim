@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+    <PackAsTool>true</PackAsTool>
+    <IsPackable>true</IsPackable>
+    <ToolCommandName>dotnet-oauth-sim</ToolCommandName>
+    <PackageId>OAuthSim</PackageId>
+    <Version>0.4.0</Version>
+    <Description>A local OAuth 2.0 and OpenID Connect simulator with a browser-based admin UI.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Remove="wwwroot/**" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <EmbeddedResource Include="Resources/country-languages.json" />
+  </ItemGroup>
+
+</Project>

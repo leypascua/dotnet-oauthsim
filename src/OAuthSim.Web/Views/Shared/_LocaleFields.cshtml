@@ -1,0 +1,10 @@
+@model OAuthSim.Web.Services.CountryOption
+@inject OAuthSim.Web.Services.CountryLanguageCatalog Catalog
+<div class="grid-2">
+    <label class="label">Country<span class="select is-fullwidth"><select name="country" x-model="country" x-on:change="changeCountry()">
+        @foreach (var country in Catalog.Countries) { <option value="@country.Code" selected="@(country.Code == Model.Code)">@country.Name</option> }
+    </select></span></label>
+    <label class="label">Language<span class="select is-fullwidth"><select name="language" x-model="language">
+        <template x-for="code in languages" :key="code"><option :value="code" x-text="label(code)"></option></template>
+    </select></span></label>
+</div>

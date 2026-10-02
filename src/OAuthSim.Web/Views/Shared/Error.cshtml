@@ -1,0 +1,14 @@
+﻿@model ErrorViewModel
+@{ ViewData["Title"] = "Error"; }
+<div class="auth-wrap">
+<section class="auth-card">
+    <div class="auth-mark is-danger" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><path d="M12 7v6M12 16.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/></svg></div>
+    <h1 class="auth-title">Something went wrong</h1>
+    <p class="auth-sub">An unexpected error occurred while processing your request.</p>
+    @if (Model.ShowRequestId)
+    {
+        <dl class="kv kv-stack"><div><dt>Request ID</dt><dd><code>@Model.RequestId</code></dd></div></dl>
+    }
+    <p class="help">Check the server console for details, then return to the <a href="/">admin page</a>.</p>
+</section>
+</div>

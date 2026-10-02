@@ -1,0 +1,18 @@
+@model OAuthSim.Web.Controllers.UserFormModel
+@inject OAuthSim.Web.Services.CountryLanguageCatalog Catalog
+@using System.Text.Json
+@{ var countries = JsonSerializer.Serialize(Catalog.Countries, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
+<form asp-action="SaveUser" method="post" hx-post="/Admin/SaveUser" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(Model.User.Country), @JsonSerializer.Serialize(Model.User.Language))">
+    <input type="hidden" name="client" value="@Model.Client" /><input type="hidden" name="id" value="@(Model.IsNew ? "" : Model.User.Id)" />
+    <div class="grid-2">
+        <label class="label">Email<input class="input" type="email" name="email" value="@Model.User.Email" placeholder="person@example.com" required /></label>
+        <label class="label">Display name<input class="input" name="name" value="@Model.User.Name" placeholder="Optional" /></label>
+    </div>
+    <partial name="_LocaleFields" model="new OAuthSim.Web.Services.CountryOption(Model.User.Country, string.Empty, new[] { Model.User.Language })" />
+    <label class="checkbox"><input type="checkbox" name="enabled" value="true" checked="@Model.User.Enabled" /><span>Enabled</span></label>
+    <div>
+        <label class="label">Custom claims by scope (JSON)<textarea class="textarea" name="claims" rows="3" placeholder='{"custom-scope":{"role":"tester"}}'>@JsonSerializer.Serialize(Model.User.ClaimsByScope, new JsonSerializerOptions { WriteIndented = true })</textarea></label>
+        <p class="help">Claims are emitted only when their scope is granted. Standard identity and token fields cannot be overridden.</p>
+    </div>
+    <div class="form-actions"><button class="button is-primary">Save user</button></div>
+</form>

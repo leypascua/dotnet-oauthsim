@@ -1,0 +1,42 @@
+@model OAuthClient
+<form asp-action="SaveClient" method="post" hx-post="/Admin/SaveClient" class="form">
+    <input type="hidden" name="id" value="@Model.Id" />
+    <div class="grid-2">
+        <label class="label">Display name<input class="input" name="name" value="@Model.Name" placeholder="My application" /></label>
+        <label class="label">Client ID<input class="input mono" name="clientId" value="@Model.ClientId" placeholder="Generated if empty" autocomplete="off" /></label>
+    </div>
+    <label class="label">Client secret<input class="input mono" type="password" name="clientSecret" value="@Model.ClientSecret" placeholder="Generated if empty" autocomplete="new-password" /></label>
+    <fieldset class="fs">
+        <legend class="eyebrow">Access</legend>
+        <div class="checks">
+            <label class="checkbox"><input type="checkbox" name="isPublic" value="true" checked="@Model.IsPublic" /><span>Public client (PKCE required)</span></label>
+            <label class="checkbox"><input type="checkbox" name="enabled" value="true" checked="@Model.Enabled" /><span>Enabled</span></label>
+            <label class="checkbox"><input type="checkbox" name="makeDefault" value="true" /><span>Use as startup default</span></label>
+            <label class="checkbox"><input type="checkbox" name="generateSecret" value="true" /><span>Generate a new secret on save</span></label>
+        </div>
+    </fieldset>
+    <fieldset class="fs">
+        <legend class="eyebrow">Redirects</legend>
+        <div>
+            <label class="label">Redirect URIs<textarea class="textarea" name="redirectUris" rows="3" placeholder="http://localhost:3000/callback">@string.Join('\n', Model.RedirectUris)</textarea></label>
+            <p class="help">One per line. An empty list accepts the redirect URI from the request; a populated list requires an exact match.</p>
+        </div>
+        <label class="checkbox"><input type="checkbox" name="relaxRedirects" value="true" checked="@Model.RelaxRedirects" /><span>Allow unregistered HTTP(S) redirect URIs even with a configured list</span></label>
+    </fieldset>
+    <fieldset class="fs">
+        <legend class="eyebrow">Scopes</legend>
+        <div>
+            <label class="label">Allowed scopes<input class="input mono" name="scopes" value="@string.Join(' ', Model.Scopes)" placeholder="openid profile email offline_access" /></label>
+            <p class="help">Space-separated. An empty list accepts request scopes and additions at login. Include openid and offline_access if your application uses them.</p>
+        </div>
+        <label class="checkbox"><input type="checkbox" name="relaxScopes" value="true" checked="@Model.RelaxScopes" /><span>Allow extra scopes even with a configured list</span></label>
+    </fieldset>
+    <fieldset class="fs">
+        <legend class="eyebrow">Application claims</legend>
+        <div>
+            <label class="label">Claims by scope (JSON)<textarea class="textarea" name="claims" rows="3" placeholder='{"api.read":{"role":"service"}}'>@System.Text.Json.JsonSerializer.Serialize(Model.ClaimsByScope, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })</textarea></label>
+            <p class="help">For client_credentials tokens only. Claims are emitted when their scope is granted; standard identity and token fields cannot be overridden. This grant requires a confidential client and issues no ID or refresh tokens.</p>
+        </div>
+    </fieldset>
+    <div class="form-actions"><button class="button is-primary">Save client</button></div>
+</form>

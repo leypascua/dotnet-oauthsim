@@ -1,0 +1,17 @@
+@model OAuthSim.Web.Controllers.FormPostModel
+@{ Layout = null; }
+<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="color-scheme" content="light dark" /><title>Returning to application</title>
+<style>
+    html { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 15px; -webkit-font-smoothing: antialiased; color-scheme: light dark; }
+    body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: #fafafa; color: #6b7280; }
+    form { display: flex; flex-direction: column; align-items: center; gap: 1rem; text-align: center; padding: 2rem; }
+    .spin { width: 1.5rem; height: 1.5rem; border-radius: 999px; border: 2px solid #e5e7eb; border-top-color: #4f46e5; animation: spin 0.9s linear infinite; }
+    button { font: inherit; font-weight: 500; color: #4f46e5; background: transparent; border: 1px solid #e5e7eb; border-radius: 8px; padding: 0.5rem 1rem; cursor: pointer; }
+    @@keyframes spin { to { transform: rotate(360deg); } }
+    @@media (prefers-color-scheme: dark) { body { background: #0f1014; color: #9ca3af; } .spin { border-color: #2a2d36; border-top-color: #818cf8; } button { color: #818cf8; border-color: #2a2d36; } }
+    @@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style></head>
+<body><form id="response" method="post" action="@Model.RedirectUri">
+    @foreach (var parameter in Model.Parameters) { <input type="hidden" name="@parameter.Key" value="@parameter.Value" /> }
+    <div class="spin" aria-hidden="true"></div><p>Returning to your application…</p><button type="submit">Continue</button>
+</form><script>document.getElementById('response').submit();</script></body></html>

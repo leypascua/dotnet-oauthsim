@@ -1,0 +1,58 @@
+@model OAuthSim.Web.Services.WelcomeViewModel
+@{ ViewData["Title"] = "Welcome back"; }
+<div class="auth-wrap">
+<section class="auth-card">
+    <div class="welcome-head">
+        <div class="ring">
+            <svg viewBox="0 0 48 48" aria-hidden="true"><circle class="ring-track" cx="24" cy="24" r="20"/><circle id="ring" class="ring-bar" cx="24" cy="24" r="20"/></svg>
+            <span id="countdown" role="timer" aria-live="off">5</span>
+        </div>
+        <div class="grow">
+            <h1 class="auth-title">Welcome back, @Model.DisplayName!</h1>
+            <p class="welcome-dest">Returning you to <a id="destination" href="@Model.Request.RedirectUri">@(new Uri(Model.Request.RedirectUri).Authority)</a></p>
+        </div>
+    </div>
+    <form id="continue-form" action="/oauth/v2/continue" method="post">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="transactionId" value="@Model.Request.Id" />
+        <button class="button is-primary is-fullwidth">Continue now</button>
+    </form>
+    <form id="logout-form" action="/oauth/v2/logout" method="post">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="transactionId" value="@Model.Request.Id" />
+        <button class="button is-ghost is-fullwidth">Log out</button>
+    </form>
+</section>
+</div>
+@section Scripts {
+    <script>
+        (() => {
+            const form = document.getElementById('continue-form');
+            const ring = document.getElementById('ring');
+            const circumference = 125.66;
+            let remaining = 5;
+            let submitted = false;
+            const draw = () => { ring.style.strokeDashoffset = (circumference * Math.min(1, (6 - remaining) / 5)).toFixed(2); };
+            requestAnimationFrame(draw);
+            const timer = setInterval(() => {
+                document.getElementById('countdown').textContent = --remaining;
+                draw();
+                if (remaining === 0) form.requestSubmit();
+            }, 1000);
+            form.addEventListener('submit', event => {
+                clearInterval(timer);
+                if (submitted) event.preventDefault();
+                submitted = true;
+            });
+            document.getElementById('destination').addEventListener('click', event => {
+                event.preventDefault();
+                form.requestSubmit();
+            });
+            document.getElementById('logout-form').addEventListener('submit', () => {
+                clearInterval(timer);
+                submitted = true;
+                ring.style.transition = 'none';
+            });
+        })();
+    </script>
+}

@@ -1,0 +1,12 @@
+@model OAuthSim.Web.Controllers.AdminViewModel
+@{
+    ViewData["Title"] = "Admin";
+    ViewData["Status"] = new Uri(Model.Issuer).Authority;
+}
+<div class="page-head">
+    <div>
+        <h1>Server administration</h1>
+        <p>Configure clients and the identities they can sign in with.</p>
+    </div>
+</div>
+<partial name="_Dashboard" model="Model" />

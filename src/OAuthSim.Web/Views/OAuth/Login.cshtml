@@ -1,0 +1,45 @@
+@model OAuthSim.Web.Services.LoginViewModel
+@inject OAuthSim.Web.Services.CountryLanguageCatalog Catalog
+@using System.Text.Json
+@{
+    ViewData["Title"] = "Sign in";
+    var last = Model.Client.LastLogin;
+    var user = Model.Client.Users.FirstOrDefault(u => u.Id == last.UserId && u.Enabled) ?? Model.Client.Users.FirstOrDefault(u => u.Enabled);
+    var saved = last.Email.Length > 0 && (user is null || user.Id == last.UserId);
+    var country = saved ? last.Country : user?.Country ?? "PH";
+    var language = saved ? last.Language : user?.Language ?? "en";
+    var countries = JsonSerializer.Serialize(Catalog.Countries, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var users = JsonSerializer.Serialize(Model.Client.Users.Where(u => u.Enabled), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+}
+<div class="auth-wrap">
+<section class="auth-card">
+    <div class="auth-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="22" height="22"><circle cx="10" cy="12" r="3.25" fill="none" stroke="currentColor" stroke-width="2"/><path d="M13.25 12h6M17 12v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></div>
+    <h1 class="auth-title">Sign in to @Model.Client.Name</h1>
+    <p class="auth-sub">Choose your simulated identity to continue.</p>
+    @if (Model.Error is not null) { <div class="banner is-danger" role="alert"><span class="banner-text">@Model.Error</span></div> }
+    <form action="/oauth/v2/authorize" method="post" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(country), @JsonSerializer.Serialize(language), @((!saved && user is null).ToString().ToLowerInvariant()))">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="transactionId" value="@Model.Request.Id" />
+        @if (Model.Client.Users.Count > 0)
+        {
+            <label class="label">User<span class="select is-fullwidth"><select name="userId" required x-on:change="const u = (@users).find(u => u.id === $event.target.value); if (u) { country = u.country; language = u.language; changeCountry(); }">
+                @foreach (var option in Model.Client.Users.Where(u => u.Enabled)) { <option value="@option.Id" selected="@(option.Id == user?.Id)">@(option.Name.Length > 0 ? option.Name + " · " : "")@option.Email</option> }
+            </select></span></label>
+            @if (user is null) { <div class="banner is-warning" role="alert"><span class="banner-text">This client has no enabled users. Enable a user in administration.</span></div> }
+        }
+        else { <label class="label">Email<input class="input" type="email" name="email" value="@last.Email" autocomplete="email" placeholder="you@example.com" required /></label> }
+        <partial name="_LocaleFields" model="new OAuthSim.Web.Services.CountryOption(country, string.Empty, new[] { language })" />
+        <details class="disclosure"><summary>Edit scopes</summary>
+            <div>
+                <label class="label">Granted scopes<input class="input mono" name="scopes" value="@string.Join(' ', Model.Request.Scopes)" /></label>
+                @if (Model.Client.Scopes.Count > 0 && !Model.Client.RelaxScopes) { <p class="help">Allowed: @string.Join(", ", Model.Client.Scopes)</p> }
+                else { <p class="help">Space-separated. Add or remove scopes for this login only.</p> }
+            </div>
+        </details>
+        <div class="auth-actions">
+            <button class="button is-primary is-fullwidth" name="decision" value="allow" disabled="@(Model.Client.Users.Count > 0 && user is null)">Continue</button>
+            <button class="button is-ghost is-fullwidth" name="decision" value="deny" formnovalidate>Cancel</button>
+        </div>
+    </form>
+</section>
+</div>

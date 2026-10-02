@@ -1,0 +1,129 @@
+@model OAuthSim.Web.Controllers.AdminViewModel
+@using System.Text.Json
+<div id="dashboard" hx-target="#dashboard" hx-swap="outerHTML" hx-disabled-elt="find button" hx-history="false" hx-indicator="#saving">
+    @if (Model.Error is not null)
+    {
+        <div class="banner is-danger" role="alert" x-data="{ open: true }" x-show="open"><span class="banner-text">@Model.Error</span><button type="button" class="banner-close" aria-label="Dismiss" x-on:click="open = false">&times;</button></div>
+    }
+    @if (Model.Message is not null)
+    {
+        <div class="banner is-success" role="status" x-data="{ open: true }" x-show="open"><span class="banner-text">@Model.Message</span><button type="button" class="banner-close" aria-label="Dismiss" x-on:click="open = false">&times;</button></div>
+    }
+    <section class="card">
+        <header class="card-head">
+            <div><h2 class="card-title">Server</h2><p class="card-sub">Endpoints and token policy for this instance.</p></div>
+            <span class="pill pill-live">Listening</span>
+        </header>
+        <dl class="kv">
+            <div><dt>Issuer</dt><dd><span class="chip" x-data="copier(@JsonSerializer.Serialize(Model.Issuer))"><code>@Model.Issuer</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy issuer">Copy</button></span></dd></div>
+            <div><dt>Discovery</dt><dd><a class="mono" href="/.well-known/openid-configuration">/.well-known/openid-configuration</a></dd></div>
+            <div><dt>Settings file</dt><dd><code>@Model.FilePath</code></dd></div>
+        </dl>
+        <div class="split">
+            <form asp-action="SaveSettings" method="post" hx-post="/Admin/SaveSettings" class="form">
+                <p class="eyebrow">Token lifetimes</p>
+                <div class="grid-3">
+                    <div><label class="label" for="code-life">Code (seconds)</label><input id="code-life" class="input" type="number" name="codeLifetimeSeconds" min="1" max="3600" value="@Model.Settings.CodeLifetimeSeconds" required /></div>
+                    <div><label class="label" for="token-life">Access / ID token (seconds)</label><input id="token-life" class="input" type="number" name="tokenLifetimeSeconds" min="1" max="86400" value="@Model.Settings.TokenLifetimeSeconds" required /></div>
+                    <div><label class="label" for="refresh-life">Refresh (seconds)</label><input id="refresh-life" class="input" type="number" name="refreshLifetimeSeconds" min="1" max="31536000" value="@Model.Settings.RefreshLifetimeSeconds" required /></div>
+                </div>
+                <div class="form-actions"><button class="button is-primary is-small">Save lifetimes</button></div>
+            </form>
+            <form asp-action="InvalidateAll" method="post" hx-post="/Admin/InvalidateAll" class="danger-zone">
+                <p class="eyebrow eyebrow-danger">Danger zone</p>
+                <p class="help">Signs out every client, clears pending requests, codes and refresh tokens, and rotates the JWT signing key.</p>
+                <button class="button is-danger is-outlined is-small">Invalidate all sessions and tokens</button>
+            </form>
+        </div>
+    </section>
+
+    <h2 class="section-title">Clients <span class="count">@Model.Settings.Clients.Count</span></h2>
+    @foreach (var client in Model.Settings.Clients)
+    {
+        <section class="card client-card" x-data="clientTabs(@JsonSerializer.Serialize(client.Id))">
+            <header class="card-head">
+                <div class="grow">
+                    <h3 class="card-title">
+                        @client.Name
+                        @if (Model.Settings.DefaultClientId == client.Id) { <span class="pill pill-accent">Startup default</span> }
+                        <span class="pill pill-muted">@(client.IsPublic ? "Public · PKCE" : "Confidential")</span>
+                        @if (!client.Enabled) { <span class="pill pill-muted">Disabled</span> }
+                    </h3>
+                    <div class="meta-row">
+                        <span class="chip" x-data="copier(@JsonSerializer.Serialize(client.ClientId))"><code>@client.ClientId</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy client ID">Copy</button></span>
+                        @if (!client.IsPublic)
+                        {
+                            <span class="chip" x-data="copier(@JsonSerializer.Serialize(client.ClientSecret))"><code x-text="show ? value : '••••••••••••••••'">••••••••••••••••</code><button type="button" class="chip-btn" x-on:click="show = !show" x-text="show ? 'Hide' : 'Show'">Show</button><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy client secret">Copy</button></span>
+                        }
+                    </div>
+                </div>
+            </header>
+            <div class="tabs-bar" role="tablist" aria-label="@client.Name sections">
+                <button type="button" role="tab" :aria-selected="tab === 'settings'" :class="{ 'is-active': tab === 'settings' }" x-on:click="select('settings')">Settings</button>
+                <button type="button" role="tab" :aria-selected="tab === 'users'" :class="{ 'is-active': tab === 'users' }" x-on:click="select('users')">Users<span class="count">@client.Users.Count</span></button>
+                <button type="button" role="tab" :aria-selected="tab === 'integration'" :class="{ 'is-active': tab === 'integration' }" x-on:click="select('integration')">Integration</button>
+            </div>
+            <div role="tabpanel" x-show="tab === 'settings'" x-cloak>
+                <partial name="_ClientForm" model="client" />
+                <div class="panel-foot">
+                    <form asp-action="DeleteClient" method="post" hx-post="/Admin/DeleteClient" hx-confirm="Delete client “@client.Name”? Its users and remembered logins are removed."><input type="hidden" name="id" value="@client.Id" /><button class="button is-ghost-danger is-small">Delete client</button></form>
+                </div>
+            </div>
+            <div role="tabpanel" x-show="tab === 'users'" x-cloak>
+                <p class="help panel-lead">With no configured users, login accepts any valid email. Otherwise login shows a picker of enabled users.</p>
+                @if (client.Users.Count > 0)
+                {
+                    <ul class="rows">
+                        @foreach (var user in client.Users)
+                        {
+                            var initial = (user.Name.Length > 0 ? user.Name : user.Email).Trim().FirstOrDefault('?');
+                            <li><details class="row">
+                                <summary>
+                                    <span class="avatar" aria-hidden="true">@initial</span>
+                                    <span class="row-main"><span class="row-title">@(user.Name.Length > 0 ? user.Name : user.Email)</span>@if (user.Name.Length > 0) { <span class="row-sub mono">@user.Email</span> }</span>
+                                    @if (!user.Enabled) { <span class="pill pill-muted">Disabled</span> }
+                                    <span class="dot @(user.Enabled ? "is-on" : "")" title="@(user.Enabled ? "Enabled" : "Disabled")"></span>
+                                    <svg class="chev" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                </summary>
+                                <div class="row-body">
+                                    <partial name="_UserForm" model="new OAuthSim.Web.Controllers.UserFormModel(client.Id, user)" />
+                                    <div class="panel-foot">
+                                        <form asp-action="DeleteUser" method="post" hx-post="/Admin/DeleteUser" hx-confirm="Delete user “@user.Email”?"><input type="hidden" name="client" value="@client.Id" /><input type="hidden" name="id" value="@user.Id" /><button class="button is-ghost-danger is-small">Delete user</button></form>
+                                    </div>
+                                </div>
+                            </details></li>
+                        }
+                    </ul>
+                }
+                <details class="ghost-card"><summary>Add user</summary><partial name="_UserForm" model="new OAuthSim.Web.Controllers.UserFormModel(client.Id, new MockUser(), true)" /></details>
+            </div>
+            <div role="tabpanel" x-show="tab === 'integration'" x-cloak>
+                <dl class="kv kv-stack">
+                    <div><dt>Authorize</dt><dd><code>@Model.Issuer/oauth/v2/authorize</code></dd></div>
+                    <div><dt>Token</dt><dd><code>@Model.Issuer/oauth/v2/token</code></dd></div>
+                    <div><dt>Userinfo</dt><dd><code>@Model.Issuer/oauth/v2/userinfo</code></dd></div>
+                    <div><dt>Client authentication</dt><dd>@(client.IsPublic ? "None — S256 PKCE required" : "client_secret_basic or client_secret_post")</dd></div>
+                </dl>
+                @{
+                    var example = Model.Issuer + "/oauth/v2/authorize?response_type=code&client_id=" + Uri.EscapeDataString(client.ClientId) + "&redirect_uri=" + Uri.EscapeDataString(client.RedirectUris.FirstOrDefault() ?? "http://localhost:3000/callback") + "&scope=" + Uri.EscapeDataString(client.Scopes.Count == 0 ? "openid profile email" : string.Join(' ', client.Scopes)) + "&state=example-state&nonce=example-nonce";
+                }
+                <div class="snippet" x-data="copier(@JsonSerializer.Serialize(example))">
+                    <div class="snippet-head"><span>Example authorization URL@(client.IsPublic ? " — add code_challenge and code_challenge_method=S256" : "")</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
+                    <pre><code>@example</code></pre>
+                </div>
+                @if (!client.IsPublic)
+                {
+                    var machineScopes = string.Join(' ', client.Scopes.Where(s => !OAuthSim.Web.Services.TokenService.IsUserScope(s)));
+                    var command = "curl " + Model.Issuer + "/oauth/v2/token -d grant_type=client_credentials --data-urlencode \"client_id=" + client.ClientId.Replace("\"", "\\\"") + "\" --data-urlencode \"client_secret=<client-secret>\"" + (machineScopes.Length > 0 ? " --data-urlencode \"scope=" + machineScopes.Replace("\"", "\\\"") + "\"" : "");
+                    <div class="snippet" x-data="copier(@JsonSerializer.Serialize(command))">
+                        <div class="snippet-head"><span>Client credentials — replace the secret placeholder</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
+                        <pre><code>@command</code></pre>
+                    </div>
+                    <p class="help">Application tokens carry no end-user identity and cannot call userinfo. An omitted scope grants no scopes.</p>
+                }
+            </div>
+        </section>
+    }
+    <details class="ghost-card"><summary>Add client</summary><partial name="_ClientForm" model="new OAuthClient { Id = string.Empty, Name = string.Empty }" /></details>
+    <div id="saving" class="htmx-indicator progress-line" role="status"><span class="sr-only">Saving…</span></div>
+</div>
