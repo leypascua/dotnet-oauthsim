@@ -19,8 +19,11 @@ public sealed class OAuthClient
     public string ClientId { get; set; } = "";
     public string ClientSecret { get; set; } = "";
     public string Name { get; set; } = "Default client";
+    public string? Issuer { get; set; }
+    public string? AccessTokenAudience { get; set; }
     public bool IsPublic { get; set; }
     public bool Enabled { get; set; } = true;
+    public bool RequireIntrospectionBasicAuthentication { get; set; } = true;
     public bool RelaxRedirects { get; set; }
     public bool RelaxScopes { get; set; }
     public List<string> RedirectUris { get; set; } = [];

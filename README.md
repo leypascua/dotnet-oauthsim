@@ -47,9 +47,41 @@ The admin page shows the server endpoints, token lifetimes and the global reset,
 | `/.well-known/openid-configuration` | OIDC discovery |
 | `/oauth/v2/jwks` | Public RS256 keys |
 
-`/authorize`, `/token`, `/userinfo`, and `/introspect` are aliases. Issuer is the printed `http://localhost:<port>` origin. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`).
+`/authorize`, `/token`, `/userinfo`, and `/introspect` are aliases. The default issuer is the printed `http://localhost:<port>` origin. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`).
 
-Confidential clients support `client_secret_basic` and `client_secret_post`. Public clients require S256 PKCE and no secret. Supported grants are `authorization_code`, `refresh_token`, and `client_credentials` (confidential clients only). Request objects and implicit/hybrid flows are not implemented.
+The token endpoint supports `client_secret_basic` and `client_secret_post` for confidential clients. Public clients require S256 PKCE and no secret. Supported grants are `authorization_code`, `refresh_token`, and `client_credentials` (confidential clients only). Request objects and implicit/hybrid flows are not implemented.
+
+### Per-client issuer and audience
+
+Each client's **Settings → Token identity** section has two optional overrides:
+
+| Setting | Configured behavior | Blank/unset behavior |
+|---|---|---|
+| Issuer override | Sets `iss` in both access and ID tokens | Uses `http://localhost:<port>` |
+| Access-token audience override | Sets `aud` in access tokens | Uses the Client ID |
+
+ID-token `aud` always remains the Client ID. These settings apply to authorization-code, refreshed, and client-credentials tokens, and persist as the client's `issuer` and `accessTokenAudience` properties. Existing settings without these properties retain the defaults. Audience identifiers can be strings such as `orders-api` or API URLs; the override is a single audience, not an array. Issuers must be absolute HTTP(S) URLs without credentials, query strings, or fragments. Outer whitespace is trimmed, and issuer paths/trailing slashes are preserved exactly.
+
+The **Integration** tab shows the effective token identities and a client-specific discovery URL:
+
+```text
+http://localhost:42069/.well-known/openid-configuration?client_id=my-client
+```
+
+This discovery document publishes that client's effective issuer, while authorization, token, userinfo, introspection, and JWKS endpoints remain local. A custom issuer does not change the server's listening address or make the simulator serve that custom domain. Discovery without `client_id` publishes the default local issuer; unknown, disabled, blank, or duplicate client selections are rejected.
+
+When using a custom issuer with ASP.NET Core OIDC, configure the local client-specific metadata address explicitly:
+
+```csharp
+options.Authority = "https://identity.example.com/tenant/"; // Issuer override
+options.MetadataAddress = "http://localhost:42069/.well-known/openid-configuration?client_id=my-client";
+options.RequireHttpsMetadata = false; // Local development metadata uses HTTP
+options.ClientId = "my-client";
+options.ClientSecret = "my-secret";
+options.ResponseType = "code";
+```
+
+Saving or clearing overrides updates issuance and simulator validation immediately. Existing access tokens whose `iss` or `aud` no longer match the issuing client's current settings become invalid to userinfo/introspection. Refresh tokens can still issue new tokens using the current settings. OIDC consumers that cache discovery metadata may need to refresh it after issuer changes. Access-token ownership is determined by `client_id`, so sharing an audience does not grant one client introspection access to another client's tokens. Reserved `iss`/`aud` entries in custom claims cannot replace these settings.
 
 ### Remembered login and logout
 
@@ -89,11 +121,18 @@ curl -u my-client:my-secret http://localhost:42069/oauth/v2/token \
 
 Alternatively send `client_id` and `client_secret` as form fields. Both `/token` and `/oauth/v2/token` support this flow. The client must be confidential and enabled. Public clients receive `unauthorized_client`; missing or incorrect credentials receive `invalid_client`.
 
-The response contains `access_token`, `token_type: "Bearer"`, `expires_in`, and the granted `scope`. It never contains an ID token or refresh token. The JWT uses the same persisted RS256 key and configured access-token lifetime as user tokens, with the client ID as `sub` and `aud`, plus `client_id` and `grant_type: "client_credentials"`.
+The response contains `access_token`, `token_type: "Bearer"`, `expires_in`, and the granted `scope`. It never contains an ID token or refresh token. The JWT uses the same persisted RS256 key and configured access-token lifetime as user tokens, with the client ID as `sub`, the effective access-token audience as `aud` (Client ID by default), plus `client_id` and `grant_type: "client_credentials"`.
 
 An omitted or empty scope grants no scopes. A configured allowed-scope list is enforced unless relaxed; an empty list accepts requested API scopes. `openid`, `profile`, `email`, and `offline_access` are always rejected with `invalid_scope` for this grant. Application tokens cannot call `/userinfo`, which returns HTTP 403 `insufficient_scope`; use these tokens with your application APIs instead.
 
-In the admin client's **Application claims by scope** field, configure machine claims such as:
+In the admin client's **Settings → Application claims** section:
+
+1. Add a scope mapping, such as `api.read`, on the left. Suggestions come from the client's Allowed scopes; adding a mapping does not change that list.
+2. Select the scope and add claim rows on the right. Enter a name, choose a value type, and enter the value. For example, use `role`, **String**, and `service` (without JSON quotes).
+3. Use **Number**, **Boolean**, or **Null** for typed values, and **Object** or **Array** for structured JSON. Switching scopes retains draft edits.
+4. Choose **Save client** to persist the mappings. Inline messages explain invalid values, reserved claims, and scopes that cannot currently be requested.
+
+The editor stores the same scope-keyed JSON structure as before, for example:
 
 ```json
 {
@@ -104,7 +143,7 @@ In the admin client's **Application claims by scope** field, configure machine c
 
 Only claims for granted scopes are emitted. Reserved token fields and standard user-profile fields cannot be overridden. Application claims are separate from configured-user claims and persist in each client's `claimsByScope` object. Existing settings without this field load with an empty object.
 
-Tokens use RS256 with a persisted RSA key. Codes default to 5 minutes, access/ID tokens to 1 hour, and refresh tokens to 30 days. `openid` requests receive ID tokens; `offline_access` grants receive refresh tokens. Refresh rotates tokens; reuse invalidates the family. Codes and refresh tokens are in memory and invalid after restart. Signed access/ID tokens remain cryptographically valid against the current key until expiry or admin key rotation; local userinfo additionally checks issuer and enabled client. Changing the listening port changes the issuer.
+Tokens use RS256 with a persisted RSA key. Codes default to 5 minutes, access/ID tokens to 1 hour, and refresh tokens to 30 days. `openid` requests receive ID tokens; `offline_access` grants receive refresh tokens. Refresh rotates tokens; reuse invalidates the family. Codes and refresh tokens are in memory and invalid after restart. Signed access/ID tokens remain cryptographically valid against the current key until expiry or admin key rotation; local userinfo additionally checks the issuing client's effective issuer/audience and enabled status. Changing the listening port changes the default issuer; configured client issuer overrides remain unchanged.
 
 ### Token introspection
 
@@ -116,11 +155,20 @@ curl -u my-client:my-secret http://localhost:42069/oauth/v2/introspect \
   -d token_type_hint=access_token
 ```
 
-The request must use `application/x-www-form-urlencoded`. Authenticate an enabled confidential client with HTTP Basic or form fields `client_id` and `client_secret`, using only one method. Public clients cannot authenticate to introspection. OAuthSim's initial policy permits inspecting only access tokens issued to the calling client; this ownership restriction is a simulator policy, not an RFC requirement. The admin Integration tab includes an example and guidance for public clients.
+The request must use `application/x-www-form-urlencoded`. Each client's admin Settings tab has a **Require Basic authentication for introspection** switch, ON by default (including existing settings). When ON, authenticate an enabled confidential client using `Authorization: Basic <base64(ClientId:ClientSecret)>`, as generated by `curl -u`. OAuth Basic credentials with reserved characters should be form-URL-encoded before joining with `:` and Base64 encoding. Form fields `client_id` and `client_secret` cannot authenticate introspection; `client_secret` form fields are rejected. Basic-authenticated callers can inspect only access tokens issued to their own client; this ownership restriction is a simulator policy, not an RFC requirement.
+
+When the switch is OFF, send only the token, without credentials:
+
+```sh
+curl http://localhost:42069/oauth/v2/introspect \
+  --data-urlencode "token=<access-token>"
+```
+
+OAuthSim infers the client only after validating the access token, then checks that client's current switch. A supplied `client_id` cannot select an anonymous client's policy. Public clients can use this anonymous mode, but cannot authenticate with Basic when the switch is ON. Invalid supplied Basic credentials always fail; they do not fall back to anonymous inspection. Switch and credential edits take effect without restart and persist. The admin Integration tab reflects the selected mode.
 
 An active response includes `active: true`, `token_type: "Bearer"`, and the validated JWT claims, including `client_id`, `sub`, `scope`, `iss`, `aud`, `iat`, `exp`, and any granted profile/custom claims with their original JSON types. Both user and application access tokens are supported. Introspection metadata cannot be overridden by custom claims.
 
-Invalid, expired, tampered, reset-invalidated, or other-client tokens return HTTP 200 with only `{"active":false}`. ID tokens and refresh tokens also return inactive; introspection currently supports access tokens only. `token_type_hint` is optional and advisory, including unfamiliar hints. Invalid credentials (including disabled/public clients) return HTTP 401 `invalid_client` with a Basic challenge. Missing/blank tokens, duplicate form parameters, incorrect content types, or combined authentication methods return HTTP 400 `invalid_request`. Responses are not cacheable (`Cache-Control: no-store`, `Pragma: no-cache`). Global token invalidation makes old tokens inactive immediately; a same-issuer restart preserves access-token validity while the signing key remains unchanged.
+Invalid, expired, tampered, reset-invalidated, or other-client tokens return HTTP 200 with only `{"active":false}`. Anonymous invalid tokens also return inactive because no trusted client can be inferred, even when all clients require Basic. ID tokens and refresh tokens also return inactive; introspection currently supports access tokens only. `token_type_hint` is optional and advisory, including unfamiliar hints. Invalid credentials (including disabled/public clients), or anonymous inspection of a valid token whose client requires Basic, return HTTP 401 `invalid_client` with a Basic challenge. Missing/blank tokens, duplicate form parameters, incorrect content types, or `client_secret` form fields return HTTP 400 `invalid_request`. Responses are not cacheable (`Cache-Control: no-store`, `Pragma: no-cache`). Global token invalidation makes old tokens inactive immediately; a same-issuer restart preserves access-token validity while the signing key remains unchanged.
 
 ## Identity and claims
 
@@ -139,7 +187,21 @@ dotnet build OAuthSim.slnx -c Release
 dotnet run --project tests/OAuthSim.Tests -c Release
 ```
 
-The integration runner exercises real HTTP endpoints, admin forms, persistence, code expiry/replay, PKCE, JWT signatures, refresh rotation/reuse, client-credentials authentication/scopes/application claims, and a standard ASP.NET Core OIDC client's sign-in callback. Pass an installed tool executable as its argument to run the same suite against the package.
+The integration runner exercises real HTTP endpoints, admin forms, persistence, code expiry/replay, PKCE, JWT signatures, refresh rotation/reuse, client-credentials authentication/scopes/application claims, per-client issuer/audience overrides, client-specific discovery, and a standard ASP.NET Core OIDC client's sign-in callback with default and custom issuers. Pass an installed tool executable as its argument to run the same suite against the package.
+
+Application-claims editor logic can also be checked with Node.js, without installing frontend dependencies:
+
+```sh
+node --test tests/OAuthSim.Tests/ApplicationClaimsEditor.test.cjs
+```
+
+For real-browser editor checks, use Playwright with Chromium installed:
+
+```sh
+node tests/browser-application-claims.cjs <path-to-playwright-module>
+```
+
+This checks typed values, lossless large numbers, scoped token emission, validation before HTMX submission, save/reload behavior, live scope-policy guidance, client isolation, issuer/audience controls and discovery, and responsive light/dark styling. It also accepts an installed tool executable as a second argument and `OAUTHSIM_SHOTS=<directory>` for screenshots.
 
 The real-browser email-login regression check requires Playwright with Chromium installed:
 

@@ -1,4 +1,5 @@
 @model OAuthClient
+@inject OAuthSim.Web.Services.TokenService Tokens
 <form asp-action="SaveClient" method="post" hx-post="/Admin/SaveClient" class="form">
     <input type="hidden" name="id" value="@Model.Id" />
     <div class="grid-2">
@@ -7,6 +8,20 @@
     </div>
     <label class="label">Client secret<input class="input mono" type="password" name="clientSecret" value="@Model.ClientSecret" placeholder="Generated if empty" autocomplete="new-password" /></label>
     <fieldset class="fs">
+        <legend class="eyebrow">Token identity</legend>
+        <div class="grid-2">
+            <div>
+                <label class="label">Issuer override<input class="input mono" type="url" name="issuer" value="@Model.Issuer" placeholder="@Tokens.Issuer" /></label>
+                <p class="help">Applies to access and ID tokens. Leave blank to use the local server origin. Custom issuers use the client-specific discovery URL in Integration.</p>
+            </div>
+            <div>
+                <label class="label">Access-token audience override<input class="input mono" name="accessTokenAudience" value="@Model.AccessTokenAudience" placeholder="@(string.IsNullOrEmpty(Model.ClientId) ? "Client ID" : Model.ClientId)" /></label>
+                <p class="help">Leave blank to use the Client ID. ID-token audience always remains the Client ID.</p>
+            </div>
+        </div>
+        <p class="help">Edits take effect on save. Existing access tokens with a different issuer or audience will fail simulator validation.</p>
+    </fieldset>
+    <fieldset class="fs">
         <legend class="eyebrow">Access</legend>
         <div class="checks">
             <label class="checkbox"><input type="checkbox" name="isPublic" value="true" checked="@Model.IsPublic" /><span>Public client (PKCE required)</span></label>
@@ -14,6 +29,12 @@
             <label class="checkbox"><input type="checkbox" name="makeDefault" value="true" /><span>Use as startup default</span></label>
             <label class="checkbox"><input type="checkbox" name="generateSecret" value="true" /><span>Generate a new secret on save</span></label>
         </div>
+    </fieldset>
+    <fieldset class="fs">
+        <legend class="eyebrow">Token introspection</legend>
+        <label class="checkbox"><input type="checkbox" name="requireIntrospectionBasicAuthentication" value="true" checked="@Model.RequireIntrospectionBasicAuthentication" /><span>Require Basic authentication for introspection</span></label>
+        <input type="hidden" name="requireIntrospectionBasicAuthentication" value="false" />
+        <p class="help">When enabled, callers must send Authorization: Basic using this confidential client's ID and secret. When disabled, callers can inspect this client's valid access tokens without credentials; the client is inferred from the validated token.</p>
     </fieldset>
     <fieldset class="fs">
         <legend class="eyebrow">Redirects</legend>
@@ -33,10 +54,7 @@
     </fieldset>
     <fieldset class="fs">
         <legend class="eyebrow">Application claims</legend>
-        <div>
-            <label class="label">Claims by scope (JSON)<textarea class="textarea" name="claims" rows="3" placeholder='{"api.read":{"role":"service"}}'>@System.Text.Json.JsonSerializer.Serialize(Model.ClaimsByScope, new System.Text.Json.JsonSerializerOptions { WriteIndented = true })</textarea></label>
-            <p class="help">For client_credentials tokens only. Claims are emitted when their scope is granted; standard identity and token fields cannot be overridden. This grant requires a confidential client and issues no ID or refresh tokens.</p>
-        </div>
+        <partial name="_ApplicationClaims" model="Model" />
     </fieldset>
     <div class="form-actions"><button class="button is-primary">Save client</button></div>
 </form>

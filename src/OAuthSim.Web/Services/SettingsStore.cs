@@ -103,6 +103,12 @@ public sealed class SettingsStore : IDisposable
             throw new InvalidOperationException("Client IDs must be unique.");
         foreach (var c in value.Clients)
         {
+            c.Issuer = string.IsNullOrWhiteSpace(c.Issuer) ? null : c.Issuer.Trim();
+            c.AccessTokenAudience = string.IsNullOrWhiteSpace(c.AccessTokenAudience) ? null : c.AccessTokenAudience.Trim();
+            if (c.Issuer is not null && (!Uri.TryCreate(c.Issuer, UriKind.Absolute, out var issuer)
+                || issuer.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(issuer.UserInfo)
+                || !string.IsNullOrEmpty(issuer.Query) || !string.IsNullOrEmpty(issuer.Fragment)))
+                throw new InvalidOperationException("Issuer must be an absolute HTTP(S) URL without credentials, a query or a fragment.");
             if (string.IsNullOrWhiteSpace(c.ClientId) || c.Users is null || c.Scopes is null || c.RedirectUris is null || c.LastLogin is null
                 || string.IsNullOrEmpty(c.Id) || (!c.IsPublic && c.ClientSecret is null)
                 || c.Users.Select(u => u.Id).Distinct().Count() != c.Users.Count

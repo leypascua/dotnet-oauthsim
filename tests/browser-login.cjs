@@ -137,7 +137,7 @@ const assert = require('node:assert/strict');
         const inspectionSnippet = card.locator('.snippet').filter({ hasText: 'Token introspection' });
         await inspectionSnippet.getByRole('button', { name: 'Copy', exact: true }).click();
         const inspectionCommand = await admin.evaluate(() => navigator.clipboard.readText());
-        assert.ok(inspectionCommand.includes(origin + '/oauth/v2/introspect') && inspectionCommand.includes('token=<access-token>') && inspectionCommand.includes('client_secret=<client-secret>'));
+        assert.ok(inspectionCommand.includes(origin + '/oauth/v2/introspect') && inspectionCommand.includes('token=<access-token>') && inspectionCommand.includes('-u "email-client:<client-secret>"'));
         assert.ok(await card.getByText('Introspection', { exact: true }).isVisible());
         await card.getByRole('tab', { name: /^Users/ }).click();
         admin.once('dialog', dialog => dialog.accept());

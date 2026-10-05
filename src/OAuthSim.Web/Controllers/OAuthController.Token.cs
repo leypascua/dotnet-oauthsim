@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using OAuthSim.Web.Models;
 using OAuthSim.Web.Services;
 
 namespace OAuthSim.Web.Controllers;
@@ -15,7 +16,7 @@ public sealed partial class OAuthController
             {
                 var client = AuthenticateClient(form);
                 var id = client.ClientId;
-                Dictionary<string, object?> result;
+                TokenResponse result;
                 switch (form["grant_type"].ToString())
                 {
                     case "authorization_code":

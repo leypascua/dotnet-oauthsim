@@ -1,0 +1,101 @@
+@model OAuthClient
+@using System.Text.Json
+@{
+    // Pass raw JSON as strings so editing unrelated fields never rounds numeric claims.
+    var groups = Model.ClaimsByScope.Select(scope => new
+    {
+        name = scope.Key,
+        claims = scope.Value.Select(claim => new
+        {
+            name = claim.Key,
+            type = claim.Value.ValueKind switch
+            {
+                JsonValueKind.String => "string",
+                JsonValueKind.Number => "number",
+                JsonValueKind.True or JsonValueKind.False => "boolean",
+                JsonValueKind.Null => "null",
+                JsonValueKind.Array => "array",
+                _ => "object"
+            },
+            value = claim.Value.ValueKind == JsonValueKind.String ? claim.Value.GetString() : claim.Value.GetRawText()
+        }).ToArray()
+    }).ToArray();
+}
+<div x-data="applicationClaims(@JsonSerializer.Serialize(groups), @JsonSerializer.Serialize(TokenPayloadJsonConverter.KnownClaims))" x-id="['scope-suggestions', 'scope-error']" class="application-claims">
+    <input type="hidden" name="claims" x-ref="payload" value="@JsonSerializer.Serialize(Model.ClaimsByScope)" />
+    <p class="help claims-intro">For <code>client_credentials</code> access tokens only. Claims are included only when their scope is granted. Requires a confidential client.</p>
+    <p class="help" x-show="publicClient" x-cloak>This client is public. Application claims take effect when the client is configured as confidential.</p>
+    <div class="claims-editor" x-cloak>
+        <div class="claims-scopes">
+            <h4 class="label">Scope mappings</h4>
+            <p class="help">Select a scope to edit its claims.</p>
+            <ul class="claims-scope-list" aria-label="Application claim scope mappings">
+                <template x-for="group in groups" :key="group.id">
+                    <li class="claims-scope-item" :class="{ 'is-active': selectedId === group.id }">
+                        <button type="button" class="claims-scope-select" :aria-pressed="selectedId === group.id" x-on:click="selectedId = group.id; submitError = ''">
+                            <span class="mono" x-text="group.name"></span><span class="count" x-text="group.claims.length"></span>
+                        </button>
+                        <button type="button" class="chip-btn claims-remove" :aria-label="'Remove scope ' + group.name" x-on:click="removeScope(group.id)">&times;</button>
+                    </li>
+                </template>
+            </ul>
+            <p class="help" x-show="groups.length === 0">Add a scope, then define the claims it contributes.</p>
+            <label class="label">New scope
+                <input class="input mono" placeholder="api.read" x-ref="newScope" x-model="newScope" :list="$id('scope-suggestions')" :aria-invalid="!!newScopeError" :aria-describedby="$id('scope-error')" x-on:input="newScopeError = ''" x-on:keydown.enter.prevent.stop="addScope()" />
+            </label>
+            <datalist :id="$id('scope-suggestions')"><template x-for="scope in allowedScopes" :key="scope"><option :value="scope"></option></template></datalist>
+            <p class="help is-danger" :id="$id('scope-error')" x-show="newScopeError" x-text="newScopeError"></p>
+            <button type="button" class="button is-small" x-on:click="addScope()">+ Add scope</button>
+            <p class="help">Mappings do not change Allowed scopes.</p>
+        </div>
+        <div class="claims-detail">
+            <template x-if="selected">
+                <div class="claims-detail-content">
+                    <h4 class="label">Claims for <code x-text="selected.name"></code></h4>
+                    <p class="help is-danger" x-show="scopeError(selected)" x-text="scopeError(selected)"></p>
+                    <p class="help" x-show="scopeHint(selected)" x-text="scopeHint(selected)"></p>
+                    <p class="help" x-show="selected.claims.length === 0">No claims yet. Add a claim such as <code>role</code> with the string value <code>service</code>.</p>
+                    <div class="claims-rows" x-ref="claimRows">
+                        <template x-for="claim in selected.claims" :key="claim.id">
+                            <div class="claims-row">
+                                <div>
+                                    <label class="label">Claim name
+                                        <input class="input mono" data-claim-name x-model="claim.name" placeholder="role" :aria-invalid="!!nameError(selected, claim)" :aria-describedby="'claim-name-help-' + claim.id" />
+                                    </label>
+                                    <p class="help is-danger" :id="'claim-name-help-' + claim.id" x-show="nameError(selected, claim)" x-text="nameError(selected, claim)"></p>
+                                    <p class="help" x-show="isReserved(claim.name)">Reserved claim; token generation ignores this value.</p>
+                                </div>
+                                <div>
+                                    <label class="label" :for="'claim-type-' + claim.id">Type</label>
+                                    <span class="select is-fullwidth claims-value"><select :id="'claim-type-' + claim.id" x-model="claim.type" x-on:change="changeType(claim)">
+                                        <option value="string">String</option><option value="number">Number</option><option value="boolean">Boolean</option><option value="null">Null</option><option value="object">Object</option><option value="array">Array</option>
+                                    </select></span>
+                                </div>
+                                <div>
+                                    <label class="label" :for="'claim-value-' + claim.id">Value</label>
+                                    <template x-if="claim.type === 'string' || claim.type === 'number'">
+                                        <input class="input mono claims-value" :id="'claim-value-' + claim.id" type="text" :inputmode="claim.type === 'number' ? 'decimal' : 'text'" x-model="claim.value" :placeholder="claim.type === 'number' ? '100' : 'service'" :aria-invalid="!!valueError(claim)" :aria-describedby="'claim-value-help-' + claim.id" />
+                                    </template>
+                                    <template x-if="claim.type === 'boolean'">
+                                        <span class="select is-fullwidth claims-value"><select :id="'claim-value-' + claim.id" x-model="claim.value"><option value="true">true</option><option value="false">false</option></select></span>
+                                    </template>
+                                    <template x-if="claim.type === 'null'"><input class="input mono claims-value" :id="'claim-value-' + claim.id" value="null" readonly /></template>
+                                    <template x-if="claim.type === 'object' || claim.type === 'array'">
+                                        <textarea class="textarea claims-value" :id="'claim-value-' + claim.id" rows="3" x-model="claim.value" :placeholder="claim.type === 'object' ? '{&quot;sandbox&quot;:true}' : '[&quot;read&quot;]'" :aria-invalid="!!valueError(claim)" :aria-describedby="'claim-value-help-' + claim.id"></textarea>
+                                    </template>
+                                    <p class="help is-danger" :id="'claim-value-help-' + claim.id" x-show="valueError(claim)" x-text="valueError(claim)"></p>
+                                </div>
+                                <button type="button" class="chip-btn claims-remove claims-row-remove" :aria-label="'Remove claim ' + (claim.name || 'row')" x-on:click="removeClaim(claim.id)">&times;</button>
+                            </div>
+                        </template>
+                    </div>
+                    <button type="button" class="button is-small" x-on:click="addClaim()">+ Add claim</button>
+                </div>
+            </template>
+            <p class="help claims-empty" x-show="!selected">Choose or add a scope on the left to configure application claims.</p>
+        </div>
+    </div>
+    <p class="help is-danger" role="alert" x-show="submitError" x-text="submitError" x-cloak></p>
+    <noscript><p class="help">Enable JavaScript to edit application claims. Existing claims are preserved when saving.</p></noscript>
+    <p class="help">Standard identity and token fields cannot be overridden. Draft changes are saved with <strong>Save client</strong>.</p>
+</div>

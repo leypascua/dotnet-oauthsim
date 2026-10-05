@@ -12,22 +12,26 @@ public sealed class TokenService : IDisposable
     private readonly object gate = new();
     private readonly Dictionary<string, RefreshGrant> refresh = [];
     private sealed record RefreshGrant(Grant Grant, string Family, bool Used, DateTimeOffset ExpiresAt);
-    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
-    { "iss", "aud", "sub", "exp", "iat", "nbf", "jti", "nonce", "auth_time", "scope", "client_id", "token_use", "grant_type", "at_hash", "email", "name", "country", "language", "locale" };
     private static readonly HashSet<string> UserScopes = new(StringComparer.Ordinal) { "openid", "profile", "email", "offline_access" };
 
     public static bool IsUserScope(string scope) => UserScopes.Contains(scope);
 
-    public Dictionary<string, object?> IssueClientCredentials(OAuthClient client, string[] scopes)
+    public TokenResponse IssueClientCredentials(OAuthClient client, string[] scopes)
     {
-        if (!client.Enabled || client.IsPublic) throw new ProtocolException("unauthorized_client", "Client credentials requires an enabled confidential client.");
-        AuthorizationService.ValidateScopes(client, scopes);
-        if (scopes.Any(IsUserScope)) throw new ProtocolException("invalid_scope", "User identity and offline_access scopes are not supported by client_credentials.");
         lock (gate)
         {
-            var claims = new Dictionary<string, object?> { ["sub"] = client.ClientId };
-            AddScopedClaims(claims, client.ClaimsByScope, scopes);
-            return AccessResponse(client.ClientId, scopes, claims, "client_credentials");
+            var settings = store.Read();
+            client = settings.Clients.FirstOrDefault(c => c.ClientId == client.ClientId)
+                ?? throw new ProtocolException("unauthorized_client", "Unknown client.");
+            if (!client.Enabled || client.IsPublic) throw new ProtocolException("unauthorized_client", "Client credentials requires an enabled confidential client.");
+            AuthorizationService.ValidateScopes(client, scopes);
+            if (scopes.Any(IsUserScope)) throw new ProtocolException("invalid_scope", "User identity and offline_access scopes are not supported by client_credentials.");
+            var claims = new TokenPayload
+            {
+                Jwt = new JwtClaims { Subject = client.ClientId },
+                CustomClaims = ScopedCustomClaims(client.ClaimsByScope, scopes)
+            };
+            return AccessResponse(client, settings, scopes, claims, "client_credentials");
         }
     }
 
@@ -38,6 +42,11 @@ public sealed class TokenService : IDisposable
     }
 
     public string Issuer => $"http://localhost:{store.Read().Port}";
+
+    public static string ResolveIssuer(OAuthClient client, string defaultIssuer) =>
+        string.IsNullOrWhiteSpace(client.Issuer) ? defaultIssuer : client.Issuer.Trim();
+    public static string ResolveAccessTokenAudience(OAuthClient client) =>
+        string.IsNullOrWhiteSpace(client.AccessTokenAudience) ? client.ClientId : client.AccessTokenAudience.Trim();
 
     public void InvalidateAll()
     {
@@ -55,33 +64,43 @@ public sealed class TokenService : IDisposable
         }
     }
 
-    public object Jwks()
+    public JsonWebKeySet Jwks()
     {
         lock (gate)
         {
             var p = rsa.ExportParameters(false);
-            return new { keys = new[] { new { kty = "RSA", use = "sig", alg = "RS256", kid = store.Read().SigningKeyId, n = Base64Url(p.Modulus!), e = Base64Url(p.Exponent!) } } };
+            return new([new RsaJsonWebKey
+            {
+                KeyId = store.Read().SigningKeyId, Modulus = Base64Url(p.Modulus!), Exponent = Base64Url(p.Exponent!)
+            }]);
         }
     }
 
-    public Dictionary<string, object?> Issue(Grant grant, string? family = null)
+    public TokenResponse Issue(Grant grant, string? family = null)
     {
         lock (gate)
         {
             var settings = store.Read();
+            var client = settings.Clients.Single(c => c.Enabled && c.ClientId == grant.ClientId);
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var claims = UserClaims(grant.Identity, grant.Scopes);
-            var result = AccessResponse(grant.ClientId, grant.Scopes, claims, "authorization_code");
-            var access = (string)result["access_token"]!;
+            var result = AccessResponse(client, settings, grant.Scopes, claims, "authorization_code");
             if (grant.Scopes.Contains("openid"))
             {
-                var id = UserClaims(grant.Identity, grant.Scopes);
-                id["iss"] = Issuer; id["aud"] = grant.ClientId; id["iat"] = now;
-                id["exp"] = now + settings.TokenLifetimeSeconds;
-                id["auth_time"] = grant.AuthTime.ToUnixTimeSeconds();
-                id["at_hash"] = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(access))[..16]);
-                if (grant.Nonce is not null) id["nonce"] = grant.Nonce;
-                result["id_token"] = Sign(id, "JWT");
+                var id = claims with
+                {
+                    Jwt = claims.Jwt with
+                    {
+                        Issuer = ResolveIssuer(client, $"http://localhost:{settings.Port}"), Audience = grant.ClientId, IssuedAt = now,
+                        ExpiresAt = now + settings.TokenLifetimeSeconds
+                    },
+                    Authentication = new OidcAuthenticationClaims
+                    {
+                        AuthTime = grant.AuthTime.ToUnixTimeSeconds(), Nonce = grant.Nonce,
+                        AccessTokenHash = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(result.AccessToken))[..16])
+                    }
+                };
+                result = result with { IdToken = Sign(id, "JWT") };
             }
             if (grant.Scopes.Contains("offline_access"))
             {
@@ -89,13 +108,13 @@ public sealed class TokenService : IDisposable
                 var value = SettingsStore.RandomValue();
                 var expiry = DateTimeOffset.UtcNow.AddSeconds(settings.RefreshLifetimeSeconds);
                 refresh[Hash(value)] = new(grant, family ?? Guid.NewGuid().ToString("N"), false, expiry);
-                result["refresh_token"] = value;
+                result = result with { RefreshToken = value };
             }
             return result;
         }
     }
 
-    public Dictionary<string, object?> Refresh(string token, string clientId, string[]? scopes)
+    public TokenResponse Refresh(string token, string clientId, string[]? scopes)
     {
         lock (gate)
         {
@@ -115,72 +134,89 @@ public sealed class TokenService : IDisposable
         }
     }
 
-    public Dictionary<string, JsonElement> ValidateAccess(string token)
+    public ValidatedAccessToken ValidateAccess(string token)
     {
         lock (gate) return ValidateAccessCore(token);
     }
 
-    private Dictionary<string, JsonElement> ValidateAccessCore(string token)
+    private ValidatedAccessToken ValidateAccessCore(string token)
     {
         try
         {
             var parts = token.Split('.');
             if (parts.Length != 3) throw new FormatException();
+            var settings = store.Read();
             using var header = JsonDocument.Parse(Decode(parts[0]));
             if (header.RootElement.GetProperty("alg").GetString() != "RS256" || header.RootElement.GetProperty("typ").GetString() != "at+jwt"
-                || header.RootElement.GetProperty("kid").GetString() != store.Read().SigningKeyId) throw new FormatException();
+                || header.RootElement.GetProperty("kid").GetString() != settings.SigningKeyId) throw new FormatException();
             lock (gate)
                 if (!rsa.VerifyData(Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), Decode(parts[2]), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
                     throw new FormatException();
-            var claims = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(Decode(parts[1])) ?? throw new FormatException();
-            if (claims["iss"].GetString() != Issuer || claims["token_use"].GetString() != "access"
-                || claims["exp"].GetInt64() <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
-                || !store.Read().Clients.Any(c => c.Enabled && c.ClientId == claims["client_id"].GetString())
-                || claims["aud"].GetString() != claims["client_id"].GetString()) throw new FormatException();
-            return claims;
+            var claims = JsonSerializer.Deserialize<TokenPayload>(Decode(parts[1])) ?? throw new FormatException();
+            // Resolve identity expectations only from the signature-verified client_id,
+            // never from a request parameter or the token's audience.
+            var client = settings.Clients.FirstOrDefault(c => c.Enabled && c.ClientId == claims.Access.ClientId);
+            if (client is null || claims.Jwt.Issuer != ResolveIssuer(client, $"http://localhost:{settings.Port}") || claims.Simulator.TokenUse != "access"
+                || claims.Jwt.ExpiresAt is not long expiresAt || expiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                || claims.Access.ClientId is null
+                || claims.Jwt.Audience != ResolveAccessTokenAudience(client)) throw new FormatException();
+            return new ValidatedAccessToken(claims);
         }
         catch (Exception ex) when (ex is FormatException or JsonException or KeyNotFoundException or InvalidOperationException or CryptographicException)
         { throw new ProtocolException("invalid_token", "Bearer access token is invalid or expired."); }
     }
 
-    public static Dictionary<string, object?> UserClaims(Identity identity, string[] scopes)
+    public static TokenPayload UserClaims(Identity identity, string[] scopes)
     {
-        var result = new Dictionary<string, object?> { ["sub"] = identity.Subject };
-        if (scopes.Contains("email")) result["email"] = identity.Email;
-        if (scopes.Contains("profile"))
+        var profile = scopes.Contains("profile");
+        return new TokenPayload
         {
-            result["name"] = identity.Name;
-            result["country"] = identity.Country;
-            result["language"] = identity.Language;
-            result["locale"] = identity.Language.Contains('-') ? identity.Language : identity.Language + "-" + identity.Country;
-        }
-        AddScopedClaims(result, identity.ClaimsByScope, scopes);
-        return result;
+            Jwt = new JwtClaims { Subject = identity.Subject },
+            Profile = new OidcProfileClaims
+            {
+                Email = scopes.Contains("email") ? identity.Email : null,
+                Name = profile ? identity.Name : null,
+                Locale = profile ? (identity.Language.Contains('-') ? identity.Language : identity.Language + "-" + identity.Country) : null
+            },
+            Simulator = new SimulatorClaims
+            {
+                Country = profile ? identity.Country : null, Language = profile ? identity.Language : null
+            },
+            CustomClaims = ScopedCustomClaims(identity.ClaimsByScope, scopes)
+        };
     }
 
-    private static void AddScopedClaims(Dictionary<string, object?> result,
+    private static Dictionary<string, JsonElement> ScopedCustomClaims(
         Dictionary<string, Dictionary<string, JsonElement>> claimsByScope, string[] scopes)
     {
+        var result = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         foreach (var scope in scopes)
             if (claimsByScope.TryGetValue(scope, out var claims))
                 foreach (var claim in claims)
-                    if (!Reserved.Contains(claim.Key)) result[claim.Key] = claim.Value;
+                    if (!TokenPayloadJsonConverter.KnownClaims.Contains(claim.Key)) result[claim.Key] = claim.Value;
+        return result;
     }
 
     // Call while holding gate: RSA signing is shared by user and application tokens.
-    private Dictionary<string, object?> AccessResponse(string clientId, string[] scopes, Dictionary<string, object?> claims, string grantType)
+    private TokenResponse AccessResponse(OAuthClient client, SimulatorSettings settings, string[] scopes, TokenPayload claims, string grantType)
     {
-        var lifetime = store.Read().TokenLifetimeSeconds;
+        var lifetime = settings.TokenLifetimeSeconds;
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        claims["iss"] = Issuer; claims["aud"] = clientId; claims["client_id"] = clientId;
-        claims["iat"] = now; claims["exp"] = now + lifetime;
-        claims["jti"] = Guid.NewGuid().ToString("N");
-        claims["scope"] = string.Join(' ', scopes); claims["token_use"] = "access";
-        claims["grant_type"] = grantType;
+        var scope = string.Join(' ', scopes);
+        claims = claims with
+        {
+            Jwt = claims.Jwt with
+            {
+                Issuer = ResolveIssuer(client, $"http://localhost:{settings.Port}"), Audience = ResolveAccessTokenAudience(client), IssuedAt = now, ExpiresAt = now + lifetime,
+                TokenId = Guid.NewGuid().ToString("N")
+            },
+            Access = new AccessTokenClaims { ClientId = client.ClientId, Scope = scope },
+            Simulator = claims.Simulator with { TokenUse = "access", GrantType = grantType }
+        };
         return new()
         {
-            ["access_token"] = Sign(claims, "at+jwt"), ["token_type"] = "Bearer",
-            ["expires_in"] = lifetime, ["scope"] = string.Join(' ', scopes)
+            AccessToken = Sign(claims, "at+jwt"),
+            ExpiresIn = lifetime, Scope = scope
         };
     }
 
@@ -189,7 +225,7 @@ public sealed class TokenService : IDisposable
     public static string Base64Url(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
     private static byte[] Decode(string value) => Convert.FromBase64String(value.Replace('-', '+').Replace('_', '/') + new string('=', (4 - value.Length % 4) % 4));
     private static string Hash(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
-    private string Sign(Dictionary<string, object?> claims, string type)
+    private string Sign(TokenPayload claims, string type)
     {
         var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "RS256", typ = type, kid = store.Read().SigningKeyId }));
         var payload = Base64Url(JsonSerializer.SerializeToUtf8Bytes(claims));

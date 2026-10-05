@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Net;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using OAuthSim.Web.Cli;
@@ -32,6 +35,15 @@ try
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<LoginSessionService>();
         builder.Services.AddControllersWithViews();
+        builder.Services.AddScoped<IntrospectionRequest>();
+        builder.Services.AddAuthentication().AddScheme<AuthenticationSchemeOptions, IntrospectionBasicHandler>(IntrospectionRequest.Scheme, _ => { });
+        builder.Services.AddAuthorization(a => a.AddPolicy(IntrospectionRequest.Policy, policy =>
+        {
+            policy.AddAuthenticationSchemes(IntrospectionRequest.Scheme);
+            policy.AddRequirements(new IntrospectionRequirement());
+        }));
+        builder.Services.AddScoped<IAuthorizationHandler, IntrospectionAuthorizationHandler>();
+        builder.Services.AddSingleton<IAuthorizationMiddlewareResultHandler, IntrospectionAuthorizationResultHandler>();
         builder.Services.AddAntiforgery(a => a.Cookie.Name = "OAuthSim.Antiforgery");
         var host = builder.Build();
         host.UseExceptionHandler("/Home/Error");
@@ -47,6 +59,8 @@ try
         });
         host.UseRouting();
         host.UseMiddleware<ProtocolCorsMiddleware>();
+        host.UseAuthentication();
+        host.UseAuthorization();
         host.MapControllers();
         host.MapControllerRoute("default", "{controller=Admin}/{action=Index}/{id?}");
         return host;

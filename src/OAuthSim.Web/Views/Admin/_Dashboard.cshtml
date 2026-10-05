@@ -1,5 +1,6 @@
 @model OAuthSim.Web.Controllers.AdminViewModel
 @using System.Text.Json
+@using OAuthSim.Web.Services
 <div id="dashboard" hx-target="#dashboard" hx-swap="outerHTML" hx-disabled-elt="find button" hx-history="false" hx-indicator="#saving">
     @if (Model.Error is not null)
     {
@@ -15,7 +16,7 @@
             <span class="pill pill-live">Listening</span>
         </header>
         <dl class="kv">
-            <div><dt>Issuer</dt><dd><span class="chip" x-data="copier(@JsonSerializer.Serialize(Model.Issuer))"><code>@Model.Issuer</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy issuer">Copy</button></span></dd></div>
+            <div><dt>Default issuer</dt><dd><span class="chip" x-data="copier(@JsonSerializer.Serialize(Model.Issuer))"><code>@Model.Issuer</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy issuer">Copy</button></span></dd></div>
             <div><dt>Discovery</dt><dd><a class="mono" href="/.well-known/openid-configuration">/.well-known/openid-configuration</a></dd></div>
             <div><dt>Settings file</dt><dd><code>@Model.FilePath</code></dd></div>
         </dl>
@@ -98,13 +99,20 @@
                 <details class="ghost-card"><summary>Add user</summary><partial name="_UserForm" model="new OAuthSim.Web.Controllers.UserFormModel(client.Id, new MockUser(), true)" /></details>
             </div>
             <div role="tabpanel" x-show="tab === 'integration'" x-cloak>
+                @{ var clientDiscovery = Model.Issuer + "/.well-known/openid-configuration?client_id=" + Uri.EscapeDataString(client.ClientId); }
                 <dl class="kv kv-stack">
+                    <div><dt>Effective issuer</dt><dd><code>@TokenService.ResolveIssuer(client, Model.Issuer)</code></dd></div>
+                    <div><dt>Access-token audience</dt><dd><code>@TokenService.ResolveAccessTokenAudience(client)</code></dd></div>
+                    <div><dt>ID-token audience</dt><dd><code>@client.ClientId</code></dd></div>
+                    <div><dt>Client-specific discovery</dt><dd><a class="mono" href="@clientDiscovery">@clientDiscovery</a></dd></div>
                     <div><dt>Authorize</dt><dd><code>@Model.Issuer/oauth/v2/authorize</code></dd></div>
                     <div><dt>Token</dt><dd><code>@Model.Issuer/oauth/v2/token</code></dd></div>
                     <div><dt>Userinfo</dt><dd><code>@Model.Issuer/oauth/v2/userinfo</code></dd></div>
                     <div><dt>Introspection</dt><dd><code>@Model.Issuer/oauth/v2/introspect</code></dd></div>
                     <div><dt>Client authentication</dt><dd>@(client.IsPublic ? "None — S256 PKCE required" : "client_secret_basic or client_secret_post")</dd></div>
+                    <div><dt>Introspection authentication</dt><dd>@(client.RequireIntrospectionBasicAuthentication ? "Basic required — confidential clients only" : "None — client inferred from validated token")</dd></div>
                 </dl>
+                <p class="help">For client-specific issuer metadata, use this discovery URL as your OIDC MetadataAddress. Endpoint URLs stay local even when the token issuer is overridden.</p>
                 @{
                     var example = Model.Issuer + "/oauth/v2/authorize?response_type=code&client_id=" + Uri.EscapeDataString(client.ClientId) + "&redirect_uri=" + Uri.EscapeDataString(client.RedirectUris.FirstOrDefault() ?? "http://localhost:3000/callback") + "&scope=" + Uri.EscapeDataString(client.Scopes.Count == 0 ? "openid profile email" : string.Join(' ', client.Scopes)) + "&state=example-state&nonce=example-nonce";
                 }
@@ -121,16 +129,21 @@
                         <pre><code>@command</code></pre>
                     </div>
                     <p class="help">Application tokens carry no end-user identity and cannot call userinfo. An omitted scope grants no scopes.</p>
-                    var introspection = "curl " + Model.Issuer + "/oauth/v2/introspect --data-urlencode \"client_id=" + client.ClientId.Replace("\"", "\\\"") + "\" --data-urlencode \"client_secret=<client-secret>\" --data-urlencode \"token=<access-token>\"";
+                }
+                @if (!client.RequireIntrospectionBasicAuthentication || !client.IsPublic)
+                {
+                    var introspection = "curl " + Model.Issuer + "/oauth/v2/introspect"
+                        + (client.RequireIntrospectionBasicAuthentication ? " -u \"" + System.Net.WebUtility.UrlEncode(client.ClientId).Replace("\"", "\\\"") + ":<client-secret>\"" : "")
+                        + " --data-urlencode \"token=<access-token>\"";
                     <div class="snippet" x-data="copier(@JsonSerializer.Serialize(introspection))">
-                        <div class="snippet-head"><span>Token introspection — replace the secret and access-token placeholders</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
+                        <div class="snippet-head"><span>Token introspection — @(client.RequireIntrospectionBasicAuthentication ? "replace the secret and access-token placeholders" : "replace the access-token placeholder; no credentials required")</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
                         <pre><code>@introspection</code></pre>
                     </div>
-                    <p class="help">Inspect user or application access tokens issued to this client. Invalid, expired, or inaccessible tokens return active: false.</p>
+                    <p class="help">Inspect user or application access tokens issued to this client. Invalid, expired, or inaccessible tokens return active: false. Form-based client-secret authentication is not supported by introspection.</p>
                 }
                 else
                 {
-                    <p class="help">Introspection requires confidential-client authentication. Validate signed JWT access tokens locally using the issuer, audience, expiry and public keys from <a href="/.well-known/openid-configuration">discovery</a> / <a href="/oauth/v2/jwks">JWKS</a>.</p>
+                    <p class="help">Introspection requires confidential-client authentication. Validate signed JWT access tokens locally using the issuer, audience, expiry and public keys from <a href="@clientDiscovery">discovery</a> / <a href="/oauth/v2/jwks">JWKS</a>.</p>
                 }
             </div>
         </section>

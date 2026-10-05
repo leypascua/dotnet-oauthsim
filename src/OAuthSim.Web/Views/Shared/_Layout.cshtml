@@ -13,6 +13,7 @@
     <script defer src="https://cdn.jsdelivr.net/npm/htmx.org@@2.0.11/dist/htmx.min.js"></script>
     <script>
         document.addEventListener('alpine:init', () => {
+            @await Html.PartialAsync("_ApplicationClaimsScript")
             Alpine.data('localePicker', (countries, initialCountry, initialLanguage, detect = false) => ({
                 countries, country: initialCountry || 'PH', language: initialLanguage || 'en',
                 get languages() { return this.countries.find(c => c.code === this.country)?.languages || ['en']; },
@@ -196,6 +197,40 @@
         .button.is-ghost-danger { background: transparent; border-color: transparent; color: var(--bulma-danger); }
         .button.is-ghost-danger:hover { background: color-mix(in srgb, var(--bulma-danger) 8%, transparent); border-color: transparent; color: var(--bulma-danger); }
         .button.is-fullwidth + .button.is-fullwidth { margin-top: 0.5rem; }
+
+        /* Application claims: the same form controls in a compact master/detail layout. */
+        .application-claims { min-width: 0; }
+        .claims-intro { margin: 0 0 0.75rem; }
+        .claims-editor { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2.5fr); border: 1px solid var(--hairline); border-radius: var(--bulma-radius); overflow: hidden; }
+        .claims-scopes { padding: 1rem; background: var(--inset); border-right: 1px solid var(--hairline); min-width: 0; }
+        .claims-scope-list { list-style: none; margin: 0.75rem 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+        .claims-scope-item { display: flex; align-items: center; border: 1px solid transparent; border-radius: var(--bulma-radius-small); min-width: 0; }
+        .claims-scope-item:hover { background: var(--surface); }
+        .claims-scope-item.is-active { background: color-mix(in srgb, var(--bulma-primary) 8%, var(--surface)); border-color: color-mix(in srgb, var(--bulma-primary) 35%, var(--hairline)); }
+        .claims-scope-select { appearance: none; border: 0; background: transparent; color: var(--bulma-text-strong); font: inherit; text-align: left; cursor: pointer; display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem; flex: 1; min-width: 0; }
+        .claims-scope-select .mono { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .claims-scopes > .button { margin-top: 0.6rem; }
+        .claims-detail { padding: 1rem; min-width: 0; }
+        .claims-detail-content > .label code { background: transparent; padding: 0; }
+        .claims-rows { margin: 0.75rem 0; }
+        .claims-row { display: grid; grid-template-columns: minmax(0, 1fr) 7.5rem minmax(0, 1.25fr) 1.6rem; gap: 0.6rem; align-items: start; padding: 0.75rem 0; }
+        .claims-row + .claims-row { border-top: 1px solid var(--hairline); }
+        .claims-value { margin-top: 0.4rem; }
+        .claims-remove { font-size: 1.15rem; flex: none; }
+        .claims-remove:hover { color: var(--bulma-danger); }
+        .claims-row-remove { margin-top: 1.65rem; }
+        .claims-empty { padding: 1.5rem 0; }
+        .application-claims .help.is-danger { color: var(--bulma-danger); }
+        .application-claims [aria-invalid="true"] { border-color: var(--bulma-danger); }
+        @@media (max-width: 760px) {
+            .claims-editor { grid-template-columns: 1fr; }
+            .claims-scopes { border-right: 0; border-bottom: 1px solid var(--hairline); }
+        }
+        @@media (max-width: 480px) {
+            .claims-row { grid-template-columns: minmax(0, 1fr) 7.5rem 1.6rem; }
+            .claims-row > :nth-child(3) { grid-column: 1 / 3; grid-row: 2; }
+            .claims-row-remove { grid-column: 3; grid-row: 1; }
+        }
 
         /* Snippets */
         .snippet { border: 1px solid var(--hairline); border-radius: var(--bulma-radius); background: var(--inset); overflow: hidden; margin-top: 1rem; }

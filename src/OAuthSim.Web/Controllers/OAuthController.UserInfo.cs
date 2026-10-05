@@ -12,11 +12,10 @@ public sealed partial class OAuthController
         {
             var header = Request.Headers.Authorization.ToString();
             if (!header.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) throw new ProtocolException("invalid_token", "Provide a bearer access token.");
-            var claims = tokens.ValidateAccess(header[7..]);
-            if (claims.TryGetValue("grant_type", out var grantType) && grantType.GetString() == "client_credentials")
+            var token = tokens.ValidateAccess(header[7..]);
+            if (token.Simulator.GrantType == "client_credentials")
                 throw new ProtocolException("insufficient_scope", "Userinfo requires an end-user access token, not an application token.");
-            var excluded = new HashSet<string> { "iss", "aud", "exp", "iat", "jti", "scope", "client_id", "token_use", "grant_type" };
-            return Json(claims.Where(c => !excluded.Contains(c.Key)).ToDictionary());
+            return Json(token.ToUserInfo());
         }
         catch (ProtocolException ex)
         {

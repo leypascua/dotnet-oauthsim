@@ -28,7 +28,8 @@ public sealed class AdminController(SettingsStore store, TokenService tokens, Co
 
     [HttpPost, ValidateAntiForgeryToken]
     public IActionResult SaveClient(string? id, string? clientId, string? clientSecret, string? name, bool isPublic,
-        bool enabled, bool relaxRedirects, bool relaxScopes, string? redirectUris, string? scopes, bool makeDefault, bool generateSecret, string? claims)
+        bool enabled, bool relaxRedirects, bool relaxScopes, string? redirectUris, string? scopes, bool makeDefault, bool generateSecret, string? claims,
+        bool? requireIntrospectionBasicAuthentication, string? issuer, string? accessTokenAudience)
     {
         return Mutate(() => store.Update(s =>
         {
@@ -42,7 +43,11 @@ public sealed class AdminController(SettingsStore store, TokenService tokens, Co
             AuthorizationService.ValidateScopes(new OAuthClient(), allowed);
             client.ClientId = clientId;
             client.Name = string.IsNullOrWhiteSpace(name) ? clientId : name.Trim();
+            if (Request.Form.ContainsKey("issuer")) client.Issuer = issuer;
+            if (Request.Form.ContainsKey("accessTokenAudience")) client.AccessTokenAudience = accessTokenAudience;
             client.IsPublic = isPublic; client.Enabled = enabled;
+            if (requireIntrospectionBasicAuthentication.HasValue)
+                client.RequireIntrospectionBasicAuthentication = requireIntrospectionBasicAuthentication.Value;
             client.RelaxRedirects = relaxRedirects; client.RelaxScopes = relaxScopes;
             client.RedirectUris = redirects; client.Scopes = allowed.ToList();
             if (Request.Form.ContainsKey("claims")) client.ClaimsByScope = ParseClaims(claims);

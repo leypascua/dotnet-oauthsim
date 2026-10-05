@@ -1,0 +1,117 @@
+Alpine.data('applicationClaims', (initialGroups, reservedNames) => ({
+    groups: [], selectedId: null, nextId: 0, newScope: '', newScopeError: '', submitError: '',
+    allowedScopes: [], relaxedScopes: false, publicClient: false,
+    form: null, submitListener: null, configListener: null, policyListener: null,
+    init() {
+        // IDs are unique across client editors, including after HTMX replacements.
+        this.prefix = this.$id('application-claims');
+        this.groups = initialGroups.map(group => ({ ...group, id: this.id(),
+            claims: group.claims.map(claim => ({ ...claim, id: this.id() })) }));
+        this.selectedId = this.groups[0]?.id ?? null;
+        this.form = this.$el.closest('form');
+        this.readPolicy();
+        this.policyListener = event => {
+            if (['scopes', 'relaxScopes', 'isPublic'].includes(event.target.name)) this.readPolicy();
+        };
+        this.submitListener = event => {
+            if (!this.validate()) { event.preventDefault(); event.stopImmediatePropagation(); return; }
+            // Set synchronously before HTMX collects FormData (Alpine bindings are deferred).
+            this.$refs.payload.value = this.serialize();
+        };
+        this.configListener = event => {
+            if (event.detail.elt !== this.form) return;
+            if (!this.validate()) { event.preventDefault(); return; }
+            event.detail.parameters.claims = this.serialize();
+        };
+        this.form.addEventListener('input', this.policyListener);
+        this.form.addEventListener('change', this.policyListener);
+        this.form.addEventListener('submit', this.submitListener, true);
+        this.form.addEventListener('htmx:configRequest', this.configListener);
+    },
+    destroy() {
+        this.form.removeEventListener('input', this.policyListener);
+        this.form.removeEventListener('change', this.policyListener);
+        this.form.removeEventListener('submit', this.submitListener, true);
+        this.form.removeEventListener('htmx:configRequest', this.configListener);
+    },
+    id() { return this.prefix + '-' + this.nextId++; },
+    get selected() { return this.groups.find(group => group.id === this.selectedId) ?? null; },
+    readPolicy() {
+        this.allowedScopes = [...new Set((this.form.elements.namedItem('scopes')?.value || '').split(' ').filter(Boolean))];
+        this.relaxedScopes = this.form.elements.namedItem('relaxScopes')?.checked || false;
+        this.publicClient = this.form.elements.namedItem('isPublic')?.checked || false;
+    },
+    scopeNameError(name) {
+        if (!name) return 'Enter a scope name.';
+        return /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(name) ? '' : 'Use a single OAuth scope: printable characters, without spaces, quotes or backslashes.';
+    },
+    scopeError(group) {
+        return this.scopeNameError(group.name) || (this.groups.some(other => other.id !== group.id && other.name === group.name) ? 'This scope already has a mapping.' : '');
+    },
+    scopeHint(group) {
+        if (['openid', 'profile', 'email', 'offline_access'].includes(group.name)) return 'This scope is not supported by client_credentials. Use an application scope such as api.read.';
+        if (!this.relaxedScopes && this.allowedScopes.length && !this.allowedScopes.includes(group.name)) return 'This scope is not in Allowed scopes. Add it there or allow extra scopes to request it.';
+        return '';
+    },
+    addScope() {
+        const name = this.newScope.trim();
+        this.newScopeError = this.scopeNameError(name) || (this.groups.some(group => group.name === name) ? 'This scope already has a mapping.' : '');
+        if (this.newScopeError) { this.$refs.newScope.focus(); return; }
+        const group = { id: this.id(), name, claims: [] };
+        this.groups.push(group); this.selectedId = group.id; this.newScope = ''; this.submitError = '';
+    },
+    removeScope(id) {
+        const index = this.groups.findIndex(group => group.id === id);
+        this.groups = this.groups.filter(group => group.id !== id);
+        if (this.selectedId === id) this.selectedId = this.groups[Math.min(index, this.groups.length - 1)]?.id ?? null;
+        this.submitError = '';
+    },
+    addClaim() {
+        if (!this.selected) return;
+        this.selected.claims.push({ id: this.id(), name: '', type: 'string', value: '' });
+        this.$nextTick(() => [...this.$refs.claimRows.querySelectorAll('[data-claim-name]')].at(-1)?.focus());
+    },
+    removeClaim(id) { this.selected.claims = this.selected.claims.filter(claim => claim.id !== id); this.submitError = ''; },
+    changeType(claim) {
+        switch (claim.type) {
+            case 'number': if (this.valueError(claim)) claim.value = '0'; break;
+            case 'boolean': if (!['true', 'false'].includes(claim.value)) claim.value = 'false'; break;
+            case 'null': claim.value = 'null'; break;
+            case 'object': if (this.valueError(claim)) claim.value = '{}'; break;
+            case 'array': if (this.valueError(claim)) claim.value = '[]'; break;
+        }
+    },
+    nameError(group, claim) {
+        if (!claim.name.trim()) return 'Enter a claim name.';
+        return group.claims.some(other => other.id !== claim.id && other.name === claim.name) ? 'Claim names must be unique within this scope.' : '';
+    },
+    isReserved(name) { return reservedNames.includes(name); },
+    valueError(claim) {
+        const value = claim.value.trim();
+        if (claim.type === 'string' || claim.type === 'null') return '';
+        if (claim.type === 'number') return /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value) ? '' : 'Enter a valid JSON number, such as 100 or 1.5.';
+        if (claim.type === 'boolean') return ['true', 'false'].includes(value) ? '' : 'Choose true or false.';
+        try {
+            const parsed = JSON.parse(value);
+            if (claim.type === 'array' && Array.isArray(parsed)) return '';
+            if (claim.type === 'object' && parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) return '';
+        } catch { }
+        return 'Enter a valid JSON ' + claim.type + (claim.type === 'array' ? ', such as ["read"].' : ', such as {"sandbox":true}.');
+    },
+    validate() {
+        const invalid = this.groups.find(group => this.scopeError(group) || group.claims.some(claim => this.nameError(group, claim) || this.valueError(claim)));
+        if (!invalid) { this.submitError = ''; return true; }
+        this.selectedId = invalid.id;
+        this.submitError = 'Review the highlighted claims for ' + (invalid.name || 'the unnamed scope') + ' before saving.';
+        this.$nextTick(() => this.$el.querySelector('.claims-detail [aria-invalid="true"]')?.focus());
+        return false;
+    },
+    serialize() {
+        // Parse only to validate types. Emit the original numeric/structured text to
+        // preserve precision, including nested numbers. Stringify keys individually
+        // rather than assigning object properties such as __proto__.
+        return '{' + this.groups.map(group => JSON.stringify(group.name) + ':{' + group.claims.map(claim =>
+            JSON.stringify(claim.name) + ':' + (claim.type === 'string' ? JSON.stringify(claim.value) : claim.type === 'null' ? 'null' : claim.value.trim())
+        ).join(',') + '}').join(',') + '}';
+    }
+}));
