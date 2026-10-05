@@ -221,6 +221,9 @@ try
     var metadata = await Json(await http.GetAsync("/.well-known/openid-configuration"));
     Check(metadata.GetProperty("issuer").GetString() == baseUrl, "discovery uses canonical issuer");
     Check(metadata.GetProperty("grant_types_supported").EnumerateArray().Any(g => g.GetString() == "client_credentials"), "discovery advertises client credentials");
+    Check(metadata.GetProperty("introspection_endpoint").GetString() == baseUrl + "/oauth/v2/introspect"
+        && metadata.GetProperty("introspection_endpoint_auth_methods_supported").EnumerateArray().Select(a => a.GetString()).SequenceEqual(new[] { "client_secret_basic", "client_secret_post" }), "discovery advertises introspection and authentication methods");
+    Check(dashboard.Contains("Token introspection") && dashboard.Contains("token=&lt;access-token&gt;"), "admin renders introspection example with placeholders");
     var jwks = await Json(await http.GetAsync("/oauth/v2/jwks"));
     Check(jwks.GetProperty("keys")[0].GetProperty("kty").GetString() == "RSA", "JWKS publishes RSA public key");
     var first = await Login();
@@ -253,6 +256,73 @@ try
     var profile = await Json(await Userinfo(access));
     Check(profile.GetProperty("email").GetString() == "person@example.com" && profile.GetProperty("locale").GetString() == "fil-PH", "userinfo returns scoped identity and locale");
     Check((await Userinfo(idToken)).StatusCode == HttpStatusCode.Unauthorized, "userinfo rejects ID token as bearer access token");
+    async Task<HttpResponseMessage> Introspect(string jwt, string client = "test-client", string secret = "test-secret", bool basic = false, string path = "/oauth/v2/introspect", string? hint = null)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        var fields = new Dictionary<string, string> { ["token"] = jwt };
+        if (hint is not null) fields["token_type_hint"] = hint;
+        if (basic) request.Headers.Authorization = new("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(client + ":" + secret)));
+        else { fields["client_id"] = client; fields["client_secret"] = secret; }
+        request.Content = new FormUrlEncodedContent(fields);
+        return await http.SendAsync(request);
+    }
+    var inspectedResponse = await Introspect(access);
+    var inspected = await Json(inspectedResponse);
+    Check(inspectedResponse.IsSuccessStatusCode && inspected.GetProperty("active").GetBoolean()
+        && inspected.GetProperty("token_type").GetString() == "Bearer" && inspected.GetProperty("email").GetString() == "person@example.com"
+        && inspected.GetProperty("exp").ValueKind == JsonValueKind.Number && inspected.GetProperty("client_id").GetString() == "test-client", "introspection returns validated user claims and metadata");
+    Check(inspectedResponse.Headers.CacheControl?.NoStore == true && inspectedResponse.Headers.Pragma.Any(p => p.Name == "no-cache"), "introspection disables response caching");
+    Check((await Json(await Introspect(access, basic: true, path: "/introspect", hint: "unfamiliar"))).GetProperty("active").GetBoolean(), "introspection alias accepts Basic authentication and advisory hints");
+    foreach (var invalid in new[] { idToken, refresh, "not-a-token", "bnVsbA.e30.AAAA", access[..^8] + "AAAAAAAA" })
+    {
+        var response = await Introspect(invalid);
+        Check(response.StatusCode == HttpStatusCode.OK && (await Json(response)).GetRawText() == "{\"active\":false}", "unsupported or invalid token returns only inactive metadata");
+    }
+    // Sign pathological tokens using this isolated server's key to exercise validation beyond signature checks.
+    string SignInspectionToken(string payload)
+    {
+        var saved = JsonDocument.Parse(File.ReadAllText(Path.Combine(settingsDirectory, "settings.json"))).RootElement;
+        using var key = RSA.Create();
+        key.ImportPkcs8PrivateKey(Convert.FromBase64String(saved.GetProperty("signingPrivateKey").GetString()!), out _);
+        var header = TokenService.Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "RS256", typ = "at+jwt", kid = saved.GetProperty("signingKeyId").GetString() }));
+        var input = header + "." + TokenService.Base64Url(Encoding.UTF8.GetBytes(payload));
+        return input + "." + TokenService.Base64Url(key.SignData(Encoding.ASCII.GetBytes(input), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1));
+    }
+    var expiredPayload = System.Text.Json.Nodes.JsonNode.Parse(inspected.GetRawText())!;
+    expiredPayload["exp"] = DateTimeOffset.UtcNow.AddSeconds(-1).ToUnixTimeSeconds();
+    foreach (var payload in new[] { "null", "{}", "[]", expiredPayload.ToJsonString() })
+        Check((await Json(await Introspect(SignInspectionToken(payload)))).GetRawText() == "{\"active\":false}", "signed malformed or expired token returns inactive");
+    foreach (var credentials in new[] { ("test-client", "wrong"), ("test-client", ""), ("unknown", "secret"), ("", "") })
+    {
+        var response = await Introspect(access, credentials.Item1, credentials.Item2);
+        Check(response.StatusCode == HttpStatusCode.Unauthorized && response.Headers.WwwAuthenticate.ToString().Contains("Basic")
+            && (await Json(response)).GetProperty("error").GetString() == "invalid_client", "introspection rejects invalid credentials with Basic challenge");
+    }
+    async Task CheckInspectionError(HttpRequestMessage request, string error, HttpStatusCode status = HttpStatusCode.BadRequest)
+    {
+        using (request)
+        {
+            var response = await http.SendAsync(request);
+            Check(response.StatusCode == status && (await Json(response)).GetProperty("error").GetString() == error, "introspection rejects " + error + " request");
+        }
+    }
+    foreach (var body in new[] { "client_id=test-client&client_secret=test-secret", "client_id=test-client&client_secret=test-secret&token=%20", "client_id=test-client&client_secret=test-secret&token=a&token=b", "client_id=test-client&client_id=test-client&client_secret=test-secret&token=a" })
+        await CheckInspectionError(new(HttpMethod.Post, "/introspect") { Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded") }, "invalid_request");
+    await CheckInspectionError(new(HttpMethod.Post, "/introspect") { Content = new StringContent("{}", Encoding.UTF8, "application/json") }, "invalid_request");
+    foreach (var auth in new[] { "Basic !!!", "Bearer " + access })
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/introspect") { Content = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = access }) };
+        request.Headers.TryAddWithoutValidation("Authorization", auth);
+        await CheckInspectionError(request, "invalid_client", HttpStatusCode.Unauthorized);
+    }
+    foreach (var fields in new[] {
+        new Dictionary<string, string> { ["token"] = access, ["client_secret"] = "test-secret" },
+        new Dictionary<string, string> { ["token"] = access, ["client_id"] = "conflicting" } })
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/introspect") { Content = new FormUrlEncodedContent(fields) };
+        request.Headers.Authorization = new("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes("test-client:test-secret")));
+        await CheckInspectionError(request, fields.ContainsKey("client_secret") ? "invalid_request" : "invalid_client", fields.ContainsKey("client_secret") ? HttpStatusCode.BadRequest : HttpStatusCode.Unauthorized);
+    }
     static JsonElement Payload(string jwt)
     {
         var part = jwt.Split('.')[1];
@@ -268,6 +338,7 @@ try
     Check(machineResponse.IsSuccessStatusCode, "client credentials succeeds with POST authentication and unconfigured scopes");
     var machine = await Json(machineResponse);
     var machineAccess = machine.GetProperty("access_token").GetString()!;
+    Check((await Json(await Introspect(machineAccess, basic: true))).GetProperty("grant_type").GetString() == "client_credentials", "introspection supports machine access tokens");
     var machinePayload = Payload(machineAccess);
     Check(machine.GetProperty("token_type").GetString() == "Bearer" && machine.GetProperty("expires_in").GetInt32() == 3600
         && !machine.TryGetProperty("id_token", out _) && !machine.TryGetProperty("refresh_token", out _), "client credentials returns access token only with configured lifetime");
@@ -359,6 +430,8 @@ try
     Check(settings.GetProperty("clients")[0].GetProperty("lastLogin").GetProperty("language").GetString() == "fil", "successful login preferences persisted");
     var addPublic = await Post("/Admin/SaveClient", new() { ["clientId"] = "public-client", ["name"] = "Public", ["isPublic"] = "true", ["enabled"] = "true" }, true);
     Check(addPublic.StatusCode == HttpStatusCode.Redirect, "admin creates public client");
+    Check((await Introspect(access, "public-client", "")).StatusCode == HttpStatusCode.Unauthorized, "public clients cannot introspect");
+    Check((await http.GetStringAsync("/")).Contains("Introspection requires confidential-client authentication"), "public client admin provides JWT validation guidance");
     var publicMachine = MachineFields(client: "public-client"); publicMachine.Remove("client_secret");
     var publicRejected = await Post("/token", publicMachine);
     Check(publicRejected.StatusCode == HttpStatusCode.BadRequest && (await Json(publicRejected)).GetProperty("error").GetString() == "unauthorized_client", "public clients cannot use client credentials");
@@ -380,6 +453,7 @@ try
     Check(cookieQuery["state"] == "reused-state", "session reuse preserves request state");
     var cookiePkceFields = ExchangeFields(cookieQuery["code"].ToString(), "public-client", "", verifier); cookiePkceFields.Remove("client_secret");
     var cookieTokens = await Json(await Post("/token", cookiePkceFields));
+    Check((await Json(await Introspect(cookieTokens.GetProperty("access_token").GetString()!))).GetRawText() == "{\"active\":false}", "introspection does not disclose another client's token claims");
     Check(Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("nonce").GetString() == "reused-nonce", "session reuse preserves PKCE and nonce");
     var cookieGrantAuthTime = Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("auth_time").GetInt64();
     await Task.Delay(1100);
@@ -400,6 +474,7 @@ try
     var customToken = await Json(await Post("/token", ExchangeFields(configured.Code)));
     var customProfile = await Json(await Userinfo(customToken.GetProperty("access_token").GetString()!));
     Check(customProfile.GetProperty("role").GetString() == "tester" && customProfile.GetProperty("email").GetString() == "configured@example.com", "configured user and scoped custom claims emitted");
+    Check((await Json(await Introspect(customToken.GetProperty("access_token").GetString()!))).GetProperty("role").GetString() == "tester", "introspection includes scoped configured-user claims");
     Check((await Post("/Admin/SaveClient", new()
     {
         ["id"] = internalId, ["clientId"] = "test-client", ["clientSecret"] = "test-secret", ["enabled"] = "true", ["redirectUris"] = callback, ["scopes"] = "openid profile email roles"
@@ -418,10 +493,14 @@ try
         if (claims is not null) fields["claims"] = claims;
         Check((await Post("/Admin/SaveClient", fields, true)).StatusCode == HttpStatusCode.Redirect, "machine client settings saved");
     }
-    const string machineClaims = "{\"api.read\":{\"role\":\"service\",\"tenant\":\"sandbox\",\"sub\":\"forged\",\"iss\":\"forged\",\"grant_type\":\"authorization_code\",\"email\":\"forged@example.com\"},\"api.write\":{\"write_permission\":true}}";
+    const string machineClaims = "{\"api.read\":{\"role\":\"service\",\"tenant\":\"sandbox\",\"sub\":\"forged\",\"iss\":\"forged\",\"grant_type\":\"authorization_code\",\"email\":\"forged@example.com\",\"active\":false,\"token_type\":\"forged\",\"limit\":3,\"features\":[\"read\"],\"context\":{\"sandbox\":true}},\"api.write\":{\"write_permission\":true}}";
     await SaveMachineClient("openid profile email roles api.read api.write", claims: machineClaims);
     var scopedMachine = await Json(await Post("/token", MachineFields()));
     var scopedPayload = Payload(scopedMachine.GetProperty("access_token").GetString()!);
+    var scopedInspection = await Json(await Introspect(scopedMachine.GetProperty("access_token").GetString()!));
+    Check(scopedInspection.GetProperty("active").GetBoolean() && scopedInspection.GetProperty("token_type").GetString() == "Bearer"
+        && scopedInspection.GetProperty("limit").GetInt32() == 3 && scopedInspection.GetProperty("features")[0].GetString() == "read"
+        && scopedInspection.GetProperty("context").GetProperty("sandbox").GetBoolean() && !scopedInspection.TryGetProperty("write_permission", out _), "introspection preserves custom JSON types and overrides forged metadata");
     Check(scopedPayload.GetProperty("role").GetString() == "service" && scopedPayload.GetProperty("tenant").GetString() == "sandbox"
         && !scopedPayload.TryGetProperty("write_permission", out _), "machine custom claims are limited to granted scopes");
     Check(scopedPayload.GetProperty("sub").GetString() == "test-client" && scopedPayload.GetProperty("iss").GetString() == baseUrl
@@ -439,6 +518,7 @@ try
     Check((await Json(await Post("/token", MachineFields("openid")))).GetProperty("error").GetString() == "invalid_scope", "relaxed policy still rejects machine user scopes");
     await SaveMachineClient("openid profile email roles api.read api.write", enabled: false);
     Check((await Post("/token", MachineFields())).StatusCode == HttpStatusCode.Unauthorized, "machine grant rejects disabled client");
+    Check((await Introspect(access)).StatusCode == HttpStatusCode.Unauthorized, "disabled clients cannot introspect");
     await SaveMachineClient("openid profile email roles api.read api.write");
     var preservedMachine = Payload((await Json(await Post("/token", MachineFields()))).GetProperty("access_token").GetString()!);
     Check(preservedMachine.GetProperty("role").GetString() == "service", "editing client without application claims field preserves saved claims");
@@ -462,6 +542,7 @@ try
     var lostRefresh = await Json(await Post("/token", new() { ["grant_type"] = "refresh_token", ["client_id"] = "public-client", ["refresh_token"] = pendingTokens.GetProperty("refresh_token").GetString()! }));
     Check(lostRefresh.GetProperty("error").GetString() == "invalid_grant", "refresh tokens invalid after restart");
     Check((await Userinfo(access)).IsSuccessStatusCode, "signed access token still valid after same-issuer restart");
+    Check((await Json(await Introspect(access))).GetProperty("active").GetBoolean(), "introspection preserves access-token validity after restart");
     Check(settings.GetProperty("clients")[0].GetProperty("claimsByScope").GetProperty("api.read").GetProperty("role").GetString() == "service", "application claims survive restart");
     var restartedMachine = Payload((await Json(await Post("/token", MachineFields()))).GetProperty("access_token").GetString()!);
     Check(restartedMachine.GetProperty("role").GetString() == "service", "machine grant emits persisted claims after restart");
@@ -481,6 +562,8 @@ try
     Check((await Post("/Admin/InvalidateAll", new(), true)).StatusCode == HttpStatusCode.Redirect, "admin global reset succeeds");
     Check((await Userinfo(access)).StatusCode == HttpStatusCode.Unauthorized, "admin reset rejects old access JWT");
     Check((await Userinfo(machineAccess)).StatusCode == HttpStatusCode.Unauthorized, "admin reset rejects old machine JWT");
+    foreach (var old in new[] { access, machineAccess })
+        Check((await Json(await Introspect(old))).GetRawText() == "{\"active\":false}", "introspection reports reset-invalidated tokens inactive");
     var revokedFields = ExchangeFields(unredeemed.Code, "public-client", "", verifier); revokedFields.Remove("client_secret");
     Check((await Json(await Post("/token", revokedFields))).GetProperty("error").GetString() == "invalid_grant", "admin reset clears authorization codes");
     Check((await Json(await Post("/token", new() { ["grant_type"] = "refresh_token", ["client_id"] = "public-client", ["refresh_token"] = resetTokens.GetProperty("refresh_token").GetString()! }))).GetProperty("error").GetString() == "invalid_grant", "admin reset clears refresh families");
@@ -489,6 +572,7 @@ try
     var afterResetJwks = await Json(await http.GetAsync("/oauth/v2/jwks"));
     Check(beforeResetJwks.GetProperty("keys")[0].GetProperty("kid").GetString() != afterResetJwks.GetProperty("keys")[0].GetProperty("kid").GetString(), "admin reset publishes rotated JWKS");
     var freshMachine = (await Json(await Post("/token", MachineFields()))).GetProperty("access_token").GetString()!;
+    Check((await Json(await Introspect(freshMachine))).GetProperty("active").GetBoolean(), "introspection accepts tokens signed after global reset");
     using (var newRsa = RSA.Create())
     {
         var key = afterResetJwks.GetProperty("keys")[0];

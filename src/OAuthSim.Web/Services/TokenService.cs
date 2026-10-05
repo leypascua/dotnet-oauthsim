@@ -132,7 +132,7 @@ public sealed class TokenService : IDisposable
             lock (gate)
                 if (!rsa.VerifyData(Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), Decode(parts[2]), HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1))
                     throw new FormatException();
-            var claims = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(Decode(parts[1]))!;
+            var claims = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(Decode(parts[1])) ?? throw new FormatException();
             if (claims["iss"].GetString() != Issuer || claims["token_use"].GetString() != "access"
                 || claims["exp"].GetInt64() <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                 || !store.Read().Clients.Any(c => c.Enabled && c.ClientId == claims["client_id"].GetString())

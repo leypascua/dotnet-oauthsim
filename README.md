@@ -43,10 +43,11 @@ The admin page shows the server endpoints, token lifetimes and the global reset,
 | `/oauth/v2/authorize` | Authorization code login, query or `form_post` response |
 | `/oauth/v2/token` | Code exchange, client credentials, and rotating refresh tokens |
 | `/oauth/v2/userinfo` | GET/POST with bearer access token |
+| `/oauth/v2/introspect` | POST to validate and inspect same-client access tokens (RFC 7662) |
 | `/.well-known/openid-configuration` | OIDC discovery |
 | `/oauth/v2/jwks` | Public RS256 keys |
 
-`/authorize`, `/token`, and `/userinfo` are aliases. Issuer is the printed `http://localhost:<port>` origin. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`).
+`/authorize`, `/token`, `/userinfo`, and `/introspect` are aliases. Issuer is the printed `http://localhost:<port>` origin. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`).
 
 Confidential clients support `client_secret_basic` and `client_secret_post`. Public clients require S256 PKCE and no secret. Supported grants are `authorization_code`, `refresh_token`, and `client_credentials` (confidential clients only). Request objects and implicit/hybrid flows are not implemented.
 
@@ -104,6 +105,22 @@ In the admin client's **Application claims by scope** field, configure machine c
 Only claims for granted scopes are emitted. Reserved token fields and standard user-profile fields cannot be overridden. Application claims are separate from configured-user claims and persist in each client's `claimsByScope` object. Existing settings without this field load with an empty object.
 
 Tokens use RS256 with a persisted RSA key. Codes default to 5 minutes, access/ID tokens to 1 hour, and refresh tokens to 30 days. `openid` requests receive ID tokens; `offline_access` grants receive refresh tokens. Refresh rotates tokens; reuse invalidates the family. Codes and refresh tokens are in memory and invalid after restart. Signed access/ID tokens remain cryptographically valid against the current key until expiry or admin key rotation; local userinfo additionally checks issuer and enabled client. Changing the listening port changes the issuer.
+
+### Token introspection
+
+OAuthSim access tokens are signed RS256 JWTs, not encrypted tokens. APIs can validate them locally using discovery/JWKS, checking the signature, expected issuer and audience, expiry, and allowed algorithm. For a server-side validity check, use [RFC 7662 token introspection](https://www.rfc-editor.org/rfc/rfc7662):
+
+```sh
+curl -u my-client:my-secret http://localhost:42069/oauth/v2/introspect \
+  --data-urlencode "token=<access-token>" \
+  -d token_type_hint=access_token
+```
+
+The request must use `application/x-www-form-urlencoded`. Authenticate an enabled confidential client with HTTP Basic or form fields `client_id` and `client_secret`, using only one method. Public clients cannot authenticate to introspection. OAuthSim's initial policy permits inspecting only access tokens issued to the calling client; this ownership restriction is a simulator policy, not an RFC requirement. The admin Integration tab includes an example and guidance for public clients.
+
+An active response includes `active: true`, `token_type: "Bearer"`, and the validated JWT claims, including `client_id`, `sub`, `scope`, `iss`, `aud`, `iat`, `exp`, and any granted profile/custom claims with their original JSON types. Both user and application access tokens are supported. Introspection metadata cannot be overridden by custom claims.
+
+Invalid, expired, tampered, reset-invalidated, or other-client tokens return HTTP 200 with only `{"active":false}`. ID tokens and refresh tokens also return inactive; introspection currently supports access tokens only. `token_type_hint` is optional and advisory, including unfamiliar hints. Invalid credentials (including disabled/public clients) return HTTP 401 `invalid_client` with a Basic challenge. Missing/blank tokens, duplicate form parameters, incorrect content types, or combined authentication methods return HTTP 400 `invalid_request`. Responses are not cacheable (`Cache-Control: no-store`, `Pragma: no-cache`). Global token invalidation makes old tokens inactive immediately; a same-issuer restart preserves access-token validity while the signing key remains unchanged.
 
 ## Identity and claims
 

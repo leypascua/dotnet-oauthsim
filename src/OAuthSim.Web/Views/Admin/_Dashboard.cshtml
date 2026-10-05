@@ -102,6 +102,7 @@
                     <div><dt>Authorize</dt><dd><code>@Model.Issuer/oauth/v2/authorize</code></dd></div>
                     <div><dt>Token</dt><dd><code>@Model.Issuer/oauth/v2/token</code></dd></div>
                     <div><dt>Userinfo</dt><dd><code>@Model.Issuer/oauth/v2/userinfo</code></dd></div>
+                    <div><dt>Introspection</dt><dd><code>@Model.Issuer/oauth/v2/introspect</code></dd></div>
                     <div><dt>Client authentication</dt><dd>@(client.IsPublic ? "None — S256 PKCE required" : "client_secret_basic or client_secret_post")</dd></div>
                 </dl>
                 @{
@@ -120,6 +121,16 @@
                         <pre><code>@command</code></pre>
                     </div>
                     <p class="help">Application tokens carry no end-user identity and cannot call userinfo. An omitted scope grants no scopes.</p>
+                    var introspection = "curl " + Model.Issuer + "/oauth/v2/introspect --data-urlencode \"client_id=" + client.ClientId.Replace("\"", "\\\"") + "\" --data-urlencode \"client_secret=<client-secret>\" --data-urlencode \"token=<access-token>\"";
+                    <div class="snippet" x-data="copier(@JsonSerializer.Serialize(introspection))">
+                        <div class="snippet-head"><span>Token introspection — replace the secret and access-token placeholders</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
+                        <pre><code>@introspection</code></pre>
+                    </div>
+                    <p class="help">Inspect user or application access tokens issued to this client. Invalid, expired, or inaccessible tokens return active: false.</p>
+                }
+                else
+                {
+                    <p class="help">Introspection requires confidential-client authentication. Validate signed JWT access tokens locally using the issuer, audience, expiry and public keys from <a href="/.well-known/openid-configuration">discovery</a> / <a href="/oauth/v2/jwks">JWKS</a>.</p>
                 }
             </div>
         </section>

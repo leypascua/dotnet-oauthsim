@@ -11,6 +11,8 @@ public sealed class DiscoveryController(TokenService tokens) : Controller
         issuer = tokens.Issuer,
         authorization_endpoint = tokens.Issuer + "/oauth/v2/authorize",
         token_endpoint = tokens.Issuer + "/oauth/v2/token",
+        introspection_endpoint = tokens.Issuer + "/oauth/v2/introspect",
+        introspection_endpoint_auth_methods_supported = new[] { "client_secret_basic", "client_secret_post" },
         userinfo_endpoint = tokens.Issuer + "/oauth/v2/userinfo",
         jwks_uri = tokens.Issuer + "/oauth/v2/jwks",
         response_types_supported = new[] { "code" },
