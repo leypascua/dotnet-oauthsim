@@ -37,7 +37,7 @@ public sealed class TokenPayloadJsonConverter : JsonConverter<TokenPayload>
             {
                 case "iss": jwt = jwt with { Issuer = value.GetString() }; break;
                 case "sub": jwt = jwt with { Subject = value.GetString() }; break;
-                case "aud": jwt = jwt with { Audience = value.GetString() }; break;
+                case "aud": jwt = jwt with { Audience = value.Deserialize<TokenAudience>(options) }; break;
                 case "exp": jwt = jwt with { ExpiresAt = Number(value) }; break;
                 case "iat": jwt = jwt with { IssuedAt = Number(value) }; break;
                 case "nbf": jwt = jwt with { NotBefore = Number(value) }; break;
@@ -71,7 +71,12 @@ public sealed class TokenPayloadJsonConverter : JsonConverter<TokenPayload>
         writer.WriteStartObject();
         WriteString("iss", value.Jwt.Issuer);
         WriteString("sub", value.Jwt.Subject);
-        WriteString("aud", value.Jwt.Audience);
+        if (value.Jwt.Audience is not null)
+        {
+            writer.WritePropertyName("aud");
+            JsonSerializer.Serialize(writer, value.Jwt.Audience, options);
+        }
+        else if (value.ExplicitNullClaims.Contains("aud")) writer.WriteNull("aud");
         WriteNumber("exp", value.Jwt.ExpiresAt);
         WriteNumber("iat", value.Jwt.IssuedAt);
         WriteNumber("nbf", value.Jwt.NotBefore);

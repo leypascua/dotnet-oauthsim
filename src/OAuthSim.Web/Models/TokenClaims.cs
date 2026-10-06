@@ -9,7 +9,7 @@ public sealed record JwtClaims
 {
     public string? Issuer { get; init; }
     public string? Subject { get; init; }
-    public string? Audience { get; init; }
+    public TokenAudience? Audience { get; init; }
     public long? ExpiresAt { get; init; }
     public long? IssuedAt { get; init; }
     public long? NotBefore { get; init; }

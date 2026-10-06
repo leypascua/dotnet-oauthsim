@@ -4,6 +4,8 @@ public sealed class SimulatorSettings
 {
     public int SchemaVersion { get; set; } = 1;
     public int Port { get; set; } = 42069;
+    public string? PublicBaseUrl { get; set; }
+    public List<string> TrustedProxies { get; set; } = [];
     public string? DefaultClientId { get; set; }
     public int CodeLifetimeSeconds { get; set; } = 300;
     public int TokenLifetimeSeconds { get; set; } = 3600;
@@ -20,7 +22,7 @@ public sealed class OAuthClient
     public string ClientSecret { get; set; } = "";
     public string Name { get; set; } = "Default client";
     public string? Issuer { get; set; }
-    public string? AccessTokenAudience { get; set; }
+    public TokenAudience? AccessTokenAudience { get; set; }
     public bool IsPublic { get; set; }
     public bool Enabled { get; set; } = true;
     public bool RequireIntrospectionBasicAuthentication { get; set; } = true;

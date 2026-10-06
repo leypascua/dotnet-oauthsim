@@ -17,7 +17,7 @@
     <h1 class="auth-title">Sign in to @Model.Client.Name</h1>
     <p class="auth-sub">Choose your simulated identity to continue.</p>
     @if (Model.Error is not null) { <div class="banner is-danger" role="alert"><span class="banner-text">@Model.Error</span></div> }
-    <form action="/oauth/v2/authorize" method="post" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(country), @JsonSerializer.Serialize(language), @((!saved && user is null).ToString().ToLowerInvariant()))">
+    <form action="@Url.Content("~/oauth/v2/authorize")" method="post" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(country), @JsonSerializer.Serialize(language), @((!saved && user is null).ToString().ToLowerInvariant()))">
         @Html.AntiForgeryToken()
         <input type="hidden" name="transactionId" value="@Model.Request.Id" />
         @if (Model.Client.Users.Count > 0)

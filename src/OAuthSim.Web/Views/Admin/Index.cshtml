@@ -1,7 +1,7 @@
 @model OAuthSim.Web.Controllers.AdminViewModel
 @{
     ViewData["Title"] = "Admin";
-    ViewData["Status"] = new Uri(Model.Issuer).Authority;
+    ViewData["Status"] = new Uri(Model.BaseUrl).Authority;
 }
 <div class="page-head">
     <div>

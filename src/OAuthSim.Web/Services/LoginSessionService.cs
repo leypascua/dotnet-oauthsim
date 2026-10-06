@@ -19,7 +19,7 @@ public sealed class LoginSessionService(SecurityState security, TimeProvider clo
     private static CookieOptions CookieOptions(HttpContext context) => new()
     {
         HttpOnly = true, SameSite = SameSiteMode.Lax, Secure = context.Request.IsHttps,
-        Path = "/", IsEssential = true, MaxAge = Lifetime
+        Path = context.Request.PathBase.HasValue ? context.Request.PathBase.Value : "/", IsEssential = true, MaxAge = Lifetime
     };
 
     public LoginSession? Get(HttpContext context, OAuthClient client, bool renew = false)

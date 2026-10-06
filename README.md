@@ -1,6 +1,6 @@
 # OAuthSim
 
-A .NET 10 CLI tool hosting a local OAuth 2.0 / OpenID Connect server with a responsive browser-based admin page.
+A .NET 10 OAuth 2.0 / OpenID Connect simulator with a responsive browser-based admin page. Run locally as a CLI tool, behind a reverse proxy, or under IIS.
 
 ## Install and run
 
@@ -30,6 +30,69 @@ dotnet run --project src/OAuthSim.Web -- --port 42069 --no-browser
 
 Plain `dotnet run` works from `src/OAuthSim.Web`; the repository root contains a solution rather than a runnable project.
 
+### HTTPS, custom hostnames, and reverse proxies
+
+Configure the externally visible URL separately from the backend listener:
+
+```sh
+dotnet oauth-sim --port 42069 --no-browser \
+  --public-base-url https://login.example.com/oauthsim
+```
+
+`--public-base-url` is persisted as `publicBaseUrl` in settings. It can also be supplied through `OAUTHSIM_PUBLIC_BASE_URL`; the CLI option takes precedence over the environment, which takes precedence over saved settings. It must be an absolute HTTP(S) URL without credentials, query, or fragment. Trailing slashes are removed. An optional path, such as `/oauthsim`, becomes the application path. Without a public URL, standalone CLI use retains `http://localhost:<port>`.
+
+Discovery, integration examples, and the default access/ID-token issuer use this public URL, independent of the backend address or request headers. Per-client issuer overrides still take precedence for token identity. Changing the public URL invalidates existing access tokens that used the previous default issuer. HTTP aliases remain available beneath the application path.
+
+For HTTPS termination at a proxy, forward `X-Forwarded-Proto`, `X-Forwarded-Host`, and `X-Forwarded-For`. The simulator accepts one forwarding hop from loopback by default. For a remote proxy, repeat `--trusted-proxy` for each trusted IP or CIDR network:
+
+```sh
+dotnet oauth-sim --no-browser --public-base-url https://login.example.com \
+  --trusted-proxy 10.0.0.10 --trusted-proxy 192.0.2.0/24
+```
+
+These values replace the loopback defaults and persist as the `trustedProxies` array. `OAUTHSIM_TRUSTED_PROXIES` accepts a comma-separated list; explicit CLI entries take precedence. Forwarded headers from other peers are ignored. The configured public hostname/port and the actual local backend address are accepted; other hosts are rejected. HTTPS forwarding produces secure login and antiforgery cookies, scoped to the application path.
+
+Example nginx location inside an HTTPS virtual host for `login.example.com`:
+
+```nginx
+location /oauthsim/ {
+    proxy_pass http://127.0.0.1:42069/;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $remote_addr;
+}
+```
+
+The proxy may strip the configured prefix (as above) or preserve it. Form actions, HTMX saves, login/logout, navigation, and cookies respect that prefix. IIS can supply it through `PathBase` directly. Configure a single forwarding hop to the simulator; this example overwrites forwarding headers at the proxy.
+
+### IIS and ASP.NET Core managed bindings
+
+`--hosted` uses the hosting platform's bindings instead of forcing the CLI loopback listener. It requires a configured public base URL and cannot be combined with `--port`. Browser auto-launch and occupied-port fallback are disabled in hosted mode. IIS supplies its own server/bindings; standalone Kestrel accepts standard `ASPNETCORE_URLS`, `ASPNETCORE_HTTP_PORTS`, `ASPNETCORE_HTTPS_PORTS`, and `Kestrel:Endpoints` configuration, including HTTPS certificates and multiple listeners. With a public URL configured, these explicit binding settings are also detected automatically when `--port` is absent.
+
+For example, in PowerShell, to expose an HTTP backend to a remote proxy:
+
+```powershell
+$env:ASPNETCORE_URLS = 'http://0.0.0.0:8080'
+dotnet oauth-sim --hosted --no-browser --public-base-url https://login.example.com --trusted-proxy 10.0.0.10
+```
+
+For IIS, install the .NET 10 Hosting Bundle and publish the web application rather than the tool package:
+
+```sh
+dotnet publish src/OAuthSim.Web -c Release -p:PackAsTool=false -o artifacts/iis
+```
+
+Create an IIS site or application pointing to the published directory, configure its HTTPS hostname binding, and give its application-pool identity Modify access to the chosen settings directory. In the generated `web.config`, set the `aspNetCore` arguments, for example:
+
+```xml
+<aspNetCore processPath="dotnet"
+            arguments=".\OAuthSim.Web.dll --hosted --no-browser --public-base-url https://login.example.com/oauthsim --settings-dir C:\ProgramData\OAuthSim"
+            hostingModel="inprocess" />
+```
+
+Use `/oauthsim` in the public URL when deploying as an IIS application at that path; omit it for a site rooted at `/`. Both IIS in-process and out-of-process hosting use platform-managed bindings. Saved settings remain shared by only one running instance, so stop the old instance before recycling into the same settings directory.
+
 ## Configuration
 
 Settings live in `~/.oauth-sim/settings.json` (`%USERPROFILE%\.oauth-sim\settings.json` on Windows). Clients, users, signing keys, token lifetimes, and per-client last successful login selections survive restarts. Writes are atomic with a `settings.json.bak` backup. A lock prevents simultaneous writers; use separate settings directories to run multiple servers. A malformed document is preserved and startup fails with recovery instructions.
@@ -43,11 +106,11 @@ The admin page shows the server endpoints, token lifetimes and the global reset,
 | `/oauth/v2/authorize` | Authorization code login, query or `form_post` response |
 | `/oauth/v2/token` | Code exchange, client credentials, and rotating refresh tokens |
 | `/oauth/v2/userinfo` | GET/POST with bearer access token |
-| `/oauth/v2/introspect` | POST to validate and inspect same-client access tokens (RFC 7662) |
+| `/oauth/v2/introspect` | POST to validate and inspect access tokens for an authenticated audience (RFC 7662), or anonymously when enabled |
 | `/.well-known/openid-configuration` | OIDC discovery |
 | `/oauth/v2/jwks` | Public RS256 keys |
 
-`/authorize`, `/token`, `/userinfo`, and `/introspect` are aliases. The default issuer is the printed `http://localhost:<port>` origin. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`).
+`/authorize`, `/token`, `/userinfo`, and `/introspect` are aliases. The default issuer is the configured public base URL, or the printed `http://localhost:<port>` origin for local CLI use. Configure OIDC clients to allow HTTP metadata during local development (ASP.NET Core: `RequireHttpsMetadata = false`). HTTPS deployments use HTTPS metadata normally.
 
 The token endpoint supports `client_secret_basic` and `client_secret_post` for confidential clients. Public clients require S256 PKCE and no secret. Supported grants are `authorization_code`, `refresh_token`, and `client_credentials` (confidential clients only). Request objects and implicit/hybrid flows are not implemented.
 
@@ -57,10 +120,12 @@ Each client's **Settings → Token identity** section has two optional overrides
 
 | Setting | Configured behavior | Blank/unset behavior |
 |---|---|---|
-| Issuer override | Sets `iss` in both access and ID tokens | Uses `http://localhost:<port>` |
-| Access-token audience override | Sets `aud` in access tokens | Uses the Client ID |
+| Issuer override | Sets `iss` in both access and ID tokens | Uses the public base URL, or `http://localhost:<port>` locally |
+| Access-token audiences | Sets `aud` in access tokens; one identifier per line | Uses the Client ID |
 
-ID-token `aud` always remains the Client ID. These settings apply to authorization-code, refreshed, and client-credentials tokens, and persist as the client's `issuer` and `accessTokenAudience` properties. Existing settings without these properties retain the defaults. Audience identifiers can be strings such as `orders-api` or API URLs; the override is a single audience, not an array. Issuers must be absolute HTTP(S) URLs without credentials, query strings, or fragments. Outer whitespace is trimmed, and issuer paths/trailing slashes are preserved exactly.
+ID-token `aud` always remains the Client ID. These settings apply to authorization-code, refreshed, and client-credentials tokens, and persist as the client's `issuer` and `accessTokenAudience` properties. Existing settings without these properties retain the defaults. Audience identifiers can be strings such as `orders-api` or API URLs. One audience is persisted and emitted as a string; multiple audiences as an array of strings. Existing single-string settings remain compatible. Audience entries are trimmed, blank entries removed, and duplicates removed using exact case-sensitive comparison. Issuers must be absolute HTTP(S) URLs without credentials, query strings, or fragments. Outer whitespace is trimmed, and issuer paths/trailing slashes are preserved exactly.
+
+Public SPA clients can configure audiences just like confidential clients. For server-side introspection, enter the target server's Client ID, such as `my-server`, in the SPA's **Access-token audiences** field. Enter additional server IDs on separate lines if the same access token targets multiple APIs. Audiences are configured per client; request-time `resource`/`audience` selection is not implemented.
 
 The **Integration** tab shows the effective token identities and a client-specific discovery URL:
 
@@ -68,7 +133,7 @@ The **Integration** tab shows the effective token identities and a client-specif
 http://localhost:42069/.well-known/openid-configuration?client_id=my-client
 ```
 
-This discovery document publishes that client's effective issuer, while authorization, token, userinfo, introspection, and JWKS endpoints remain local. A custom issuer does not change the server's listening address or make the simulator serve that custom domain. Discovery without `client_id` publishes the default local issuer; unknown, disabled, blank, or duplicate client selections are rejected.
+This discovery document publishes that client's effective issuer, while authorization, token, userinfo, introspection, and JWKS endpoints use the server's public base URL (localhost for default CLI use). A per-client issuer override does not change endpoint locations or listener bindings. Discovery without `client_id` publishes the default server issuer; unknown, disabled, blank, or duplicate client selections are rejected.
 
 When using a custom issuer with ASP.NET Core OIDC, configure the local client-specific metadata address explicitly:
 
@@ -81,7 +146,7 @@ options.ClientSecret = "my-secret";
 options.ResponseType = "code";
 ```
 
-Saving or clearing overrides updates issuance and simulator validation immediately. Existing access tokens whose `iss` or `aud` no longer match the issuing client's current settings become invalid to userinfo/introspection. Refresh tokens can still issue new tokens using the current settings. OIDC consumers that cache discovery metadata may need to refresh it after issuer changes. Access-token ownership is determined by `client_id`, so sharing an audience does not grant one client introspection access to another client's tokens. Reserved `iss`/`aud` entries in custom claims cannot replace these settings.
+Saving or clearing overrides updates issuance and simulator validation immediately. Existing access tokens whose `iss` or complete `aud` set no longer match the issuing client's current settings become invalid to userinfo/introspection; audience order does not affect validity. Refresh tokens can still issue new tokens using the current settings. OIDC consumers that cache discovery metadata may need to refresh it after issuer changes. The issuing client is determined by signature-validated `client_id`; an authenticated introspection caller is authorized separately by its membership in `aud`. Merely configuring the caller's own tokens with the same audience does not grant introspection access. Reserved `iss`/`aud` entries in custom claims cannot replace these settings.
 
 ### Remembered login and logout
 
@@ -155,7 +220,16 @@ curl -u my-client:my-secret http://localhost:42069/oauth/v2/introspect \
   -d token_type_hint=access_token
 ```
 
-The request must use `application/x-www-form-urlencoded`. Each client's admin Settings tab has a **Require Basic authentication for introspection** switch, ON by default (including existing settings). When ON, authenticate an enabled confidential client using `Authorization: Basic <base64(ClientId:ClientSecret)>`, as generated by `curl -u`. OAuth Basic credentials with reserved characters should be form-URL-encoded before joining with `:` and Base64 encoding. Form fields `client_id` and `client_secret` cannot authenticate introspection; `client_secret` form fields are rejected. Basic-authenticated callers can inspect only access tokens issued to their own client; this ownership restriction is a simulator policy, not an RFC requirement.
+The request must use `application/x-www-form-urlencoded`. Each issuing client's admin Settings tab has a **Require Basic authentication for introspection** switch, ON by default (including existing settings). When ON, authenticate an enabled confidential client using `Authorization: Basic <base64(ClientId:ClientSecret)>`, as generated by `curl -u`. OAuth Basic credentials with reserved characters should be form-URL-encoded before joining with `:` and Base64 encoding. Form fields `client_id` and `client_secret` cannot authenticate introspection; `client_secret` form fields are rejected. Basic-authenticated callers can inspect an access token only if its `aud` contains their Client ID, using exact, case-sensitive membership in a string or string array. This applies even when the caller acquired the token itself, or the issuing client's switch is OFF.
+
+For example, register a public `my-spa` client and a confidential `my-server` client. Set the SPA's **Access-token audiences** to `my-server`. After the SPA obtains a token using S256 PKCE and sends it to the server, the server calls:
+
+```sh
+curl -u my-server:server-secret http://localhost:42069/introspect \
+  --data-urlencode "token=<spa-access-token>"
+```
+
+The active response retains `client_id: "my-spa"` and `aud: "my-server"`; the SPA's ID-token audience remains `my-spa`. The SPA does not need the server's secret. Servers must also enforce required scopes/permissions for their endpoints. With multiple configured API audiences, each listed confidential server can introspect using its own credentials.
 
 When the switch is OFF, send only the token, without credentials:
 
@@ -164,11 +238,11 @@ curl http://localhost:42069/oauth/v2/introspect \
   --data-urlencode "token=<access-token>"
 ```
 
-OAuthSim infers the client only after validating the access token, then checks that client's current switch. A supplied `client_id` cannot select an anonymous client's policy. Public clients can use this anonymous mode, but cannot authenticate with Basic when the switch is ON. Invalid supplied Basic credentials always fail; they do not fall back to anonymous inspection. Switch and credential edits take effect without restart and persist. The admin Integration tab reflects the selected mode.
+OAuthSim infers the issuing client only after validating the access token, then checks that client's current switch. A supplied `client_id` cannot select an anonymous client's policy. Public clients can use this anonymous mode, but cannot authenticate with Basic. When their switch is ON, an audience-matched confidential server can still introspect their tokens. Invalid supplied Basic credentials always fail; they do not fall back to anonymous inspection. Switch and credential edits take effect without restart and persist. The admin Integration tab reflects the selected mode.
 
 An active response includes `active: true`, `token_type: "Bearer"`, and the validated JWT claims, including `client_id`, `sub`, `scope`, `iss`, `aud`, `iat`, `exp`, and any granted profile/custom claims with their original JSON types. Both user and application access tokens are supported. Introspection metadata cannot be overridden by custom claims.
 
-Invalid, expired, tampered, reset-invalidated, or other-client tokens return HTTP 200 with only `{"active":false}`. Anonymous invalid tokens also return inactive because no trusted client can be inferred, even when all clients require Basic. ID tokens and refresh tokens also return inactive; introspection currently supports access tokens only. `token_type_hint` is optional and advisory, including unfamiliar hints. Invalid credentials (including disabled/public clients), or anonymous inspection of a valid token whose client requires Basic, return HTTP 401 `invalid_client` with a Basic challenge. Missing/blank tokens, duplicate form parameters, incorrect content types, or `client_secret` form fields return HTTP 400 `invalid_request`. Responses are not cacheable (`Cache-Control: no-store`, `Pragma: no-cache`). Global token invalidation makes old tokens inactive immediately; a same-issuer restart preserves access-token validity while the signing key remains unchanged.
+Invalid, expired, tampered, reset-invalidated, or audience-unauthorized tokens return HTTP 200 with only `{"active":false}`. Malformed token audiences (empty arrays, non-string entries, or blank identifiers) are inactive. Anonymous invalid tokens also return inactive because no trusted client can be inferred, even when all clients require Basic. ID tokens and refresh tokens also return inactive; introspection currently supports access tokens only. `token_type_hint` is optional and advisory, including unfamiliar hints. Invalid credentials (including disabled/public clients), or anonymous inspection of a valid token whose client requires Basic, return HTTP 401 `invalid_client` with a Basic challenge. Missing/blank tokens, duplicate form parameters, incorrect content types, or `client_secret` form fields return HTTP 400 `invalid_request`. Responses are not cacheable (`Cache-Control: no-store`, `Pragma: no-cache`). Global token invalidation makes old tokens inactive immediately; a same-issuer restart preserves access-token validity while the signing key remains unchanged.
 
 ## Identity and claims
 
@@ -178,7 +252,7 @@ Clients without users accept an email. Configured clients show enabled users in 
 
 The embedded country/language catalog is a curated ISO-country list informed by [Unicode CLDR territory-language information](https://unicode.org/cldr/charts/latest/supplemental/territory_language_information.html), not an exhaustive population-language dataset. English is an explicit simulator fallback for every country. Country/language names come from .NET/ICU and browser Intl; the UI stays in English.
 
-Browser token/userinfo requests allow CORS from configured redirect origins, and loopback origins when redirects are unconfigured or relaxed. Admin is loopback-only with antiforgery-protected mutation forms. Stored mock secrets and the private signing key are readable by the current user; use development credentials.
+Browser token/userinfo requests allow CORS from configured redirect origins, and loopback origins when redirects are unconfigured or relaxed. Admin is available on the configured public URL and local backend, with antiforgery-protected mutation forms. Stored mock secrets and the private signing key are readable by the current user; use development credentials.
 
 ## Development checks
 
@@ -187,7 +261,7 @@ dotnet build OAuthSim.slnx -c Release
 dotnet run --project tests/OAuthSim.Tests -c Release
 ```
 
-The integration runner exercises real HTTP endpoints, admin forms, persistence, code expiry/replay, PKCE, JWT signatures, refresh rotation/reuse, client-credentials authentication/scopes/application claims, per-client issuer/audience overrides, client-specific discovery, and a standard ASP.NET Core OIDC client's sign-in callback with default and custom issuers. Pass an installed tool executable as its argument to run the same suite against the package.
+The integration runner exercises real HTTP endpoints, admin forms, persistence, code expiry/replay, PKCE, JWT signatures, refresh rotation/reuse, client-credentials authentication/scopes/application claims, per-client issuer/audience overrides, client-specific discovery, and a standard ASP.NET Core OIDC client's sign-in callback with default and custom issuers. It also checks forwarded HTTPS, trusted proxy networks, public hostname/path discovery and token identity, prefixed admin/login flows, secure cookies, and native HTTPS with multiple listeners. Pass an installed tool executable as its argument to run the same suite against the package.
 
 Application-claims editor logic can also be checked with Node.js, without installing frontend dependencies:
 
@@ -209,4 +283,4 @@ The real-browser email-login regression check requires Playwright with Chromium 
 node tests/browser-login.cjs <path-to-playwright-module>
 ```
 
-It verifies email/English submission, welcome-back countdown, destination completion, logout cancellation, prompt/max_age handling, form_post session reuse, the HTMX global reset, admin tab persistence across HTMX swaps, nested user forms, clipboard copy, dark-scheme rendering and reduced-motion behavior, and fails on any browser page error. Optionally pass an installed tool executable as the second argument to test the package. Set `OAUTHSIM_SHOTS=<directory>` to also save light/dark desktop and mobile screenshots.
+It verifies email/English submission, welcome-back countdown, destination completion, logout cancellation, prompt/max_age handling, form_post session reuse, the HTMX global reset, admin tab persistence across HTMX swaps, nested user forms, clipboard copy, dark-scheme rendering and reduced-motion behavior, and fails on any browser page error. Set `OAUTHSIM_TEST_PROXY=1` to run the same suite through a prefix-stripping reverse proxy at `/oauthsim`. Optionally pass an installed tool executable as the second argument to test the package. Set `OAUTHSIM_SHOTS=<directory>` to also save light/dark desktop and mobile screenshots.

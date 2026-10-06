@@ -82,11 +82,14 @@ public sealed class SettingsStore : IDisposable
             }
             if (string.IsNullOrEmpty(client.ClientSecret) && !client.IsPublic) client.ClientSecret = RandomValue();
             if (options.Port is not null) settings.Port = options.Port.Value;
+            if (options.PublicBaseUrl is not null) settings.PublicBaseUrl = options.PublicBaseUrl;
+            if (options.TrustedProxies is not null) settings.TrustedProxies = options.TrustedProxies.ToList();
             if (string.IsNullOrEmpty(settings.SigningPrivateKey))
             {
                 using var rsa = RSA.Create(2048);
                 settings.SigningPrivateKey = Convert.ToBase64String(rsa.ExportPkcs8PrivateKey());
             }
+            Validate(settings);
         }
     }
 
@@ -95,6 +98,19 @@ public sealed class SettingsStore : IDisposable
 
     private static void Validate(SimulatorSettings value)
     {
+        value.PublicBaseUrl = string.IsNullOrWhiteSpace(value.PublicBaseUrl) ? null : value.PublicBaseUrl.Trim().TrimEnd('/');
+        if (value.PublicBaseUrl is not null)
+        {
+            if (!Uri.TryCreate(value.PublicBaseUrl, UriKind.Absolute, out var publicUrl)
+                || publicUrl.Scheme is not ("http" or "https") || string.IsNullOrEmpty(publicUrl.Host)
+                || !string.IsNullOrEmpty(publicUrl.UserInfo) || !string.IsNullOrEmpty(publicUrl.Query) || !string.IsNullOrEmpty(publicUrl.Fragment))
+                throw new InvalidOperationException("Public base URL must be an absolute HTTP(S) URL without credentials, a query or a fragment.");
+            value.PublicBaseUrl = publicUrl.AbsoluteUri.TrimEnd('/');
+        }
+        if (value.TrustedProxies is null || value.TrustedProxies.Any(p => string.IsNullOrWhiteSpace(p)
+            || (!System.Net.IPAddress.TryParse(p.Trim(), out _) && !System.Net.IPNetwork.TryParse(p.Trim(), out _))))
+            throw new InvalidOperationException("Trusted proxies must be IP addresses or CIDR networks.");
+        value.TrustedProxies = value.TrustedProxies.Select(p => p.Trim()).Distinct(StringComparer.Ordinal).ToList();
         if (value.SchemaVersion != 1 || value.Port is < 1 or > 65535 || value.CodeLifetimeSeconds is < 1 or > 3600
             || value.TokenLifetimeSeconds is < 1 or > 86400 || value.RefreshLifetimeSeconds is < 1 or > 31536000)
             throw new InvalidOperationException("Unsupported schema or invalid port/token lifetimes.");
@@ -104,7 +120,7 @@ public sealed class SettingsStore : IDisposable
         foreach (var c in value.Clients)
         {
             c.Issuer = string.IsNullOrWhiteSpace(c.Issuer) ? null : c.Issuer.Trim();
-            c.AccessTokenAudience = string.IsNullOrWhiteSpace(c.AccessTokenAudience) ? null : c.AccessTokenAudience.Trim();
+            c.AccessTokenAudience = c.AccessTokenAudience?.Normalize();
             if (c.Issuer is not null && (!Uri.TryCreate(c.Issuer, UriKind.Absolute, out var issuer)
                 || issuer.Scheme is not ("http" or "https") || !string.IsNullOrEmpty(issuer.UserInfo)
                 || !string.IsNullOrEmpty(issuer.Query) || !string.IsNullOrEmpty(issuer.Fragment)))

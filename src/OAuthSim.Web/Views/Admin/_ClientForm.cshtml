@@ -1,6 +1,6 @@
 @model OAuthClient
 @inject OAuthSim.Web.Services.TokenService Tokens
-<form asp-action="SaveClient" method="post" hx-post="/Admin/SaveClient" class="form">
+<form asp-action="SaveClient" method="post" hx-post="@Url.Action("SaveClient", "Admin")" class="form">
     <input type="hidden" name="id" value="@Model.Id" />
     <div class="grid-2">
         <label class="label">Display name<input class="input" name="name" value="@Model.Name" placeholder="My application" /></label>
@@ -11,12 +11,12 @@
         <legend class="eyebrow">Token identity</legend>
         <div class="grid-2">
             <div>
-                <label class="label">Issuer override<input class="input mono" type="url" name="issuer" value="@Model.Issuer" placeholder="@Tokens.Issuer" /></label>
-                <p class="help">Applies to access and ID tokens. Leave blank to use the local server origin. Custom issuers use the client-specific discovery URL in Integration.</p>
+                <label class="label">Issuer override<input class="input mono" type="url" name="issuer" value="@Model.Issuer" placeholder="@Tokens.BaseUrl" /></label>
+                <p class="help">Applies to access and ID tokens. Leave blank to use the server's public base URL. Custom issuers use the client-specific discovery URL in Integration.</p>
             </div>
             <div>
-                <label class="label">Access-token audience override<input class="input mono" name="accessTokenAudience" value="@Model.AccessTokenAudience" placeholder="@(string.IsNullOrEmpty(Model.ClientId) ? "Client ID" : Model.ClientId)" /></label>
-                <p class="help">Leave blank to use the Client ID. ID-token audience always remains the Client ID.</p>
+                <label class="label">Access-token audiences<textarea class="textarea mono" name="accessTokenAudience" aria-label="Access-token audiences" rows="3" placeholder="@(string.IsNullOrEmpty(Model.ClientId) ? "Client ID" : Model.ClientId)">@(Model.AccessTokenAudience is null ? "" : string.Join('\n', Model.AccessTokenAudience.Values))</textarea></label>
+                <p class="help">One audience per line. For a SPA, enter the target server's Client ID so that server can introspect using its own credentials. Leave blank to use this client's ID. ID-token audience always remains the Client ID.</p>
             </div>
         </div>
         <p class="help">Edits take effect on save. Existing access tokens with a different issuer or audience will fail simulator validation.</p>
@@ -34,7 +34,7 @@
         <legend class="eyebrow">Token introspection</legend>
         <label class="checkbox"><input type="checkbox" name="requireIntrospectionBasicAuthentication" value="true" checked="@Model.RequireIntrospectionBasicAuthentication" /><span>Require Basic authentication for introspection</span></label>
         <input type="hidden" name="requireIntrospectionBasicAuthentication" value="false" />
-        <p class="help">When enabled, callers must send Authorization: Basic using this confidential client's ID and secret. When disabled, callers can inspect this client's valid access tokens without credentials; the client is inferred from the validated token.</p>
+        <p class="help">When enabled, callers must send Authorization: Basic using an enabled confidential client's ID and secret; the token's audience must include that caller's Client ID. When disabled, callers can inspect this client's valid access tokens without credentials; the issuing client is inferred from the validated token. Authenticated callers always require an audience match.</p>
     </fieldset>
     <fieldset class="fs">
         <legend class="eyebrow">Redirects</legend>

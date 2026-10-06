@@ -77,7 +77,9 @@ public sealed class IntrospectionRequest(SettingsStore store, TokenService token
                 // authorize an inactive response, never disclosure of token claims.
                 try { validated = tokens.ValidateAccess(token); }
                 catch (ProtocolException ex) when (ex.Error == "invalid_token") { return true; }
-                if (caller is not null && validated.Access.ClientId != caller.ClientId) return true;
+                // The authenticated resource server need not be the client that acquired
+                // the token, but must be an intended recipient of the validated token.
+                if (caller is not null && validated.Jwt.Audience?.Contains(caller.ClientId) != true) return true;
                 var owner = store.Read().Clients.FirstOrDefault(c => c.Enabled && c.ClientId == validated.Access.ClientId);
                 if (owner is null) return true;
                 if (caller is null && owner.RequireIntrospectionBasicAuthentication)

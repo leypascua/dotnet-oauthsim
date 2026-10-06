@@ -1,5 +1,6 @@
 // Run: node tests/browser-login.cjs <path-to-playwright-module>
 // Requires Playwright and its Chromium browser; no frontend build is needed.
+// Set OAUTHSIM_TEST_PROXY=1 to run the same flows through a prefix-stripping proxy.
 const { chromium } = require(process.argv[2] || 'playwright');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
@@ -13,9 +14,35 @@ const assert = require('node:assert/strict');
     const callback = http.createServer((request, response) => response.end('callback'));
     await new Promise(resolve => callback.listen(0, '127.0.0.1', resolve));
     const callbackUrl = `http://localhost:${callback.address().port}/callback`;
+    let proxy;
+    const hostingArgs = [];
+    if (process.env.OAUTHSIM_TEST_PROXY === '1') {
+        const reserve = http.createServer();
+        await new Promise(resolve => reserve.listen(0, '127.0.0.1', resolve));
+        const backendPort = reserve.address().port;
+        await new Promise(resolve => reserve.close(resolve));
+        proxy = http.createServer((request, response) => {
+            if (request.url !== '/oauthsim' && !request.url.startsWith('/oauthsim/')) {
+                response.writeHead(404).end('Missing application prefix');
+                return;
+            }
+            const upstream = http.request({
+                hostname: '127.0.0.1', port: backendPort, path: request.url.slice('/oauthsim'.length) || '/', method: request.method,
+                headers: { ...request.headers, host: `127.0.0.1:${backendPort}`, 'x-forwarded-host': request.headers.host,
+                    'x-forwarded-proto': 'http', 'x-forwarded-for': request.socket.remoteAddress }
+            }, result => {
+                response.writeHead(result.statusCode, result.headers);
+                result.pipe(response);
+            });
+            upstream.on('error', error => { response.writeHead(502).end(error.message); });
+            request.pipe(upstream);
+        });
+        await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+        hostingArgs.push('--port', String(backendPort), '--public-base-url', `http://localhost:${proxy.address().port}/oauthsim`);
+    }
     const executable = process.argv[3] || path.resolve('src/OAuthSim.Web/bin/Release/net10.0/OAuthSim.Web.dll');
     const server = spawn(process.argv[3] ? executable : 'dotnet', [
-        ...(process.argv[3] ? [] : [executable]), '--settings-dir', directory, '--clientId', 'email-client', '--clientSecret', 'secret', '--no-browser'
+        ...(process.argv[3] ? [] : [executable]), '--settings-dir', directory, '--clientId', 'email-client', '--clientSecret', 'secret', '--no-browser', ...hostingArgs
     ]);
     let output = '';
     server.stdout.on('data', data => output += data);
@@ -24,7 +51,7 @@ const assert = require('node:assert/strict');
     try {
         let origin;
         for (let i = 0; i < 150; i++) {
-            origin = output.match(/Admin:\s+(http:\/\/localhost:\d+)/)?.[1];
+            origin = output.match(/Admin:\s+(http:\/\/localhost:\d+(?:\/oauthsim)?)/)?.[1];
             if (origin) break;
             if (server.exitCode !== null) throw new Error(output);
             await new Promise(resolve => setTimeout(resolve, 100));
@@ -50,6 +77,7 @@ const assert = require('node:assert/strict');
         console.log('PASS English default submits language and accepts an ad-hoc email');
         const sessionCookie = (await context.cookies()).find(c => c.name.startsWith('OAuthSim.Login.'));
         assert.ok(sessionCookie.httpOnly && sessionCookie.sameSite === 'Lax');
+        assert.equal(sessionCookie.path, proxy ? '/oauthsim' : '/');
         await page.goto(url);
         await page.getByRole('heading', { name: 'Welcome back, new.person!' }).waitFor();
         assert.equal(await page.locator('#countdown').textContent(), '5');
@@ -130,7 +158,7 @@ const assert = require('node:assert/strict');
             await admin.screenshot({ path: path.join(shots, 'admin-integration.png'), fullPage: true });
             await card.getByRole('tab', { name: /^Users/ }).click();
         }
-        await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+        await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(origin).origin });
         await admin.getByRole('button', { name: 'Copy client ID' }).click();
         assert.equal(await admin.evaluate(() => navigator.clipboard.readText()), 'email-client');
         await card.getByRole('tab', { name: 'Integration' }).click();
@@ -184,9 +212,11 @@ const assert = require('node:assert/strict');
         await dark.close();
         console.log('PASS dark scheme renders and countdown works under reduced motion');
         assert.deepEqual(errors, []);
+        if (proxy) console.log('PASS prefix-stripping reverse proxy supports every login, logout, HTMX and navigation flow');
     } finally {
         if (browser) await browser.close();
         await new Promise(resolve => callback.close(resolve));
+        if (proxy) await new Promise(resolve => proxy.close(resolve));
         if (server.exitCode === null) { server.kill(); await new Promise(resolve => server.once('exit', resolve)); }
         fs.rmSync(directory, { recursive: true, force: true });
     }

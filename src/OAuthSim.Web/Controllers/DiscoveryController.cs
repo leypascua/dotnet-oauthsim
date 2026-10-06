@@ -8,8 +8,8 @@ public sealed class DiscoveryController(TokenService tokens, SettingsStore store
     [HttpGet("/.well-known/openid-configuration")]
     public IActionResult Configuration([FromQuery(Name = "client_id")] string? clientId)
     {
-        var defaultIssuer = tokens.Issuer;
-        var issuer = defaultIssuer;
+        var baseUrl = tokens.BaseUrl;
+        var issuer = baseUrl;
         if (Request.Query.ContainsKey("client_id"))
         {
             if (Request.Query["client_id"].Count != 1)
@@ -17,18 +17,18 @@ public sealed class DiscoveryController(TokenService tokens, SettingsStore store
             var client = store.Read().Clients.FirstOrDefault(c => c.Enabled && c.ClientId == clientId);
             if (client is null)
                 return BadRequest(new { error = "invalid_client", error_description = "Unknown or disabled client." });
-            issuer = TokenService.ResolveIssuer(client, defaultIssuer);
+            issuer = TokenService.ResolveIssuer(client, baseUrl);
         }
         Response.Headers.CacheControl = "no-store";
         return Json(new
         {
             issuer,
-            authorization_endpoint = defaultIssuer + "/oauth/v2/authorize",
-            token_endpoint = defaultIssuer + "/oauth/v2/token",
-            introspection_endpoint = defaultIssuer + "/oauth/v2/introspect",
+            authorization_endpoint = baseUrl + "/oauth/v2/authorize",
+            token_endpoint = baseUrl + "/oauth/v2/token",
+            introspection_endpoint = baseUrl + "/oauth/v2/introspect",
             introspection_endpoint_auth_methods_supported = new[] { "client_secret_basic" },
-            userinfo_endpoint = defaultIssuer + "/oauth/v2/userinfo",
-            jwks_uri = defaultIssuer + "/oauth/v2/jwks",
+            userinfo_endpoint = baseUrl + "/oauth/v2/userinfo",
+            jwks_uri = baseUrl + "/oauth/v2/jwks",
             response_types_supported = new[] { "code" },
             response_modes_supported = new[] { "query", "form_post" },
             grant_types_supported = new[] { "authorization_code", "refresh_token", "client_credentials" },

@@ -16,12 +16,12 @@
             <span class="pill pill-live">Listening</span>
         </header>
         <dl class="kv">
-            <div><dt>Default issuer</dt><dd><span class="chip" x-data="copier(@JsonSerializer.Serialize(Model.Issuer))"><code>@Model.Issuer</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy issuer">Copy</button></span></dd></div>
-            <div><dt>Discovery</dt><dd><a class="mono" href="/.well-known/openid-configuration">/.well-known/openid-configuration</a></dd></div>
+            <div><dt>Default issuer</dt><dd><span class="chip" x-data="copier(@JsonSerializer.Serialize(Model.BaseUrl))"><code>@Model.BaseUrl</code><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'" aria-label="Copy issuer">Copy</button></span></dd></div>
+            <div><dt>Discovery</dt><dd><a class="mono" href="@Url.Content("~/.well-known/openid-configuration")">@Model.BaseUrl/.well-known/openid-configuration</a></dd></div>
             <div><dt>Settings file</dt><dd><code>@Model.FilePath</code></dd></div>
         </dl>
         <div class="split">
-            <form asp-action="SaveSettings" method="post" hx-post="/Admin/SaveSettings" class="form">
+            <form asp-action="SaveSettings" method="post" hx-post="@Url.Action("SaveSettings", "Admin")" class="form">
                 <p class="eyebrow">Token lifetimes</p>
                 <div class="grid-3">
                     <div><label class="label" for="code-life">Code (seconds)</label><input id="code-life" class="input" type="number" name="codeLifetimeSeconds" min="1" max="3600" value="@Model.Settings.CodeLifetimeSeconds" required /></div>
@@ -30,7 +30,7 @@
                 </div>
                 <div class="form-actions"><button class="button is-primary is-small">Save lifetimes</button></div>
             </form>
-            <form asp-action="InvalidateAll" method="post" hx-post="/Admin/InvalidateAll" class="danger-zone">
+            <form asp-action="InvalidateAll" method="post" hx-post="@Url.Action("InvalidateAll", "Admin")" class="danger-zone">
                 <p class="eyebrow eyebrow-danger">Danger zone</p>
                 <p class="help">Signs out every client, clears pending requests, codes and refresh tokens, and rotates the JWT signing key.</p>
                 <button class="button is-danger is-outlined is-small">Invalidate all sessions and tokens</button>
@@ -67,7 +67,7 @@
             <div role="tabpanel" x-show="tab === 'settings'" x-cloak>
                 <partial name="_ClientForm" model="client" />
                 <div class="panel-foot">
-                    <form asp-action="DeleteClient" method="post" hx-post="/Admin/DeleteClient" hx-confirm="Delete client “@client.Name”? Its users and remembered logins are removed."><input type="hidden" name="id" value="@client.Id" /><button class="button is-ghost-danger is-small">Delete client</button></form>
+                    <form asp-action="DeleteClient" method="post" hx-post="@Url.Action("DeleteClient", "Admin")" hx-confirm="Delete client “@client.Name”? Its users and remembered logins are removed."><input type="hidden" name="id" value="@client.Id" /><button class="button is-ghost-danger is-small">Delete client</button></form>
                 </div>
             </div>
             <div role="tabpanel" x-show="tab === 'users'" x-cloak>
@@ -89,7 +89,7 @@
                                 <div class="row-body">
                                     <partial name="_UserForm" model="new OAuthSim.Web.Controllers.UserFormModel(client.Id, user)" />
                                     <div class="panel-foot">
-                                        <form asp-action="DeleteUser" method="post" hx-post="/Admin/DeleteUser" hx-confirm="Delete user “@user.Email”?"><input type="hidden" name="client" value="@client.Id" /><input type="hidden" name="id" value="@user.Id" /><button class="button is-ghost-danger is-small">Delete user</button></form>
+                                        <form asp-action="DeleteUser" method="post" hx-post="@Url.Action("DeleteUser", "Admin")" hx-confirm="Delete user “@user.Email”?"><input type="hidden" name="client" value="@client.Id" /><input type="hidden" name="id" value="@user.Id" /><button class="button is-ghost-danger is-small">Delete user</button></form>
                                     </div>
                                 </div>
                             </details></li>
@@ -99,22 +99,22 @@
                 <details class="ghost-card"><summary>Add user</summary><partial name="_UserForm" model="new OAuthSim.Web.Controllers.UserFormModel(client.Id, new MockUser(), true)" /></details>
             </div>
             <div role="tabpanel" x-show="tab === 'integration'" x-cloak>
-                @{ var clientDiscovery = Model.Issuer + "/.well-known/openid-configuration?client_id=" + Uri.EscapeDataString(client.ClientId); }
+                @{ var clientDiscovery = Model.BaseUrl + "/.well-known/openid-configuration?client_id=" + Uri.EscapeDataString(client.ClientId); }
                 <dl class="kv kv-stack">
-                    <div><dt>Effective issuer</dt><dd><code>@TokenService.ResolveIssuer(client, Model.Issuer)</code></dd></div>
+                    <div><dt>Effective issuer</dt><dd><code>@TokenService.ResolveIssuer(client, Model.BaseUrl)</code></dd></div>
                     <div><dt>Access-token audience</dt><dd><code>@TokenService.ResolveAccessTokenAudience(client)</code></dd></div>
                     <div><dt>ID-token audience</dt><dd><code>@client.ClientId</code></dd></div>
                     <div><dt>Client-specific discovery</dt><dd><a class="mono" href="@clientDiscovery">@clientDiscovery</a></dd></div>
-                    <div><dt>Authorize</dt><dd><code>@Model.Issuer/oauth/v2/authorize</code></dd></div>
-                    <div><dt>Token</dt><dd><code>@Model.Issuer/oauth/v2/token</code></dd></div>
-                    <div><dt>Userinfo</dt><dd><code>@Model.Issuer/oauth/v2/userinfo</code></dd></div>
-                    <div><dt>Introspection</dt><dd><code>@Model.Issuer/oauth/v2/introspect</code></dd></div>
+                    <div><dt>Authorize</dt><dd><code>@Model.BaseUrl/oauth/v2/authorize</code></dd></div>
+                    <div><dt>Token</dt><dd><code>@Model.BaseUrl/oauth/v2/token</code></dd></div>
+                    <div><dt>Userinfo</dt><dd><code>@Model.BaseUrl/oauth/v2/userinfo</code></dd></div>
+                    <div><dt>Introspection</dt><dd><code>@Model.BaseUrl/oauth/v2/introspect</code></dd></div>
                     <div><dt>Client authentication</dt><dd>@(client.IsPublic ? "None — S256 PKCE required" : "client_secret_basic or client_secret_post")</dd></div>
                     <div><dt>Introspection authentication</dt><dd>@(client.RequireIntrospectionBasicAuthentication ? "Basic required — confidential clients only" : "None — client inferred from validated token")</dd></div>
                 </dl>
-                <p class="help">For client-specific issuer metadata, use this discovery URL as your OIDC MetadataAddress. Endpoint URLs stay local even when the token issuer is overridden.</p>
+                <p class="help">For client-specific issuer metadata, use this discovery URL as your OIDC MetadataAddress. Endpoint URLs use the server's public base URL even when the token issuer is overridden.</p>
                 @{
-                    var example = Model.Issuer + "/oauth/v2/authorize?response_type=code&client_id=" + Uri.EscapeDataString(client.ClientId) + "&redirect_uri=" + Uri.EscapeDataString(client.RedirectUris.FirstOrDefault() ?? "http://localhost:3000/callback") + "&scope=" + Uri.EscapeDataString(client.Scopes.Count == 0 ? "openid profile email" : string.Join(' ', client.Scopes)) + "&state=example-state&nonce=example-nonce";
+                    var example = Model.BaseUrl + "/oauth/v2/authorize?response_type=code&client_id=" + Uri.EscapeDataString(client.ClientId) + "&redirect_uri=" + Uri.EscapeDataString(client.RedirectUris.FirstOrDefault() ?? "http://localhost:3000/callback") + "&scope=" + Uri.EscapeDataString(client.Scopes.Count == 0 ? "openid profile email" : string.Join(' ', client.Scopes)) + "&state=example-state&nonce=example-nonce";
                 }
                 <div class="snippet" x-data="copier(@JsonSerializer.Serialize(example))">
                     <div class="snippet-head"><span>Example authorization URL@(client.IsPublic ? " — add code_challenge and code_challenge_method=S256" : "")</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
@@ -123,7 +123,7 @@
                 @if (!client.IsPublic)
                 {
                     var machineScopes = string.Join(' ', client.Scopes.Where(s => !OAuthSim.Web.Services.TokenService.IsUserScope(s)));
-                    var command = "curl " + Model.Issuer + "/oauth/v2/token -d grant_type=client_credentials --data-urlencode \"client_id=" + client.ClientId.Replace("\"", "\\\"") + "\" --data-urlencode \"client_secret=<client-secret>\"" + (machineScopes.Length > 0 ? " --data-urlencode \"scope=" + machineScopes.Replace("\"", "\\\"") + "\"" : "");
+                    var command = "curl " + Model.BaseUrl + "/oauth/v2/token -d grant_type=client_credentials --data-urlencode \"client_id=" + client.ClientId.Replace("\"", "\\\"") + "\" --data-urlencode \"client_secret=<client-secret>\"" + (machineScopes.Length > 0 ? " --data-urlencode \"scope=" + machineScopes.Replace("\"", "\\\"") + "\"" : "");
                     <div class="snippet" x-data="copier(@JsonSerializer.Serialize(command))">
                         <div class="snippet-head"><span>Client credentials — replace the secret placeholder</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
                         <pre><code>@command</code></pre>
@@ -132,18 +132,18 @@
                 }
                 @if (!client.RequireIntrospectionBasicAuthentication || !client.IsPublic)
                 {
-                    var introspection = "curl " + Model.Issuer + "/oauth/v2/introspect"
+                    var introspection = "curl " + Model.BaseUrl + "/oauth/v2/introspect"
                         + (client.RequireIntrospectionBasicAuthentication ? " -u \"" + System.Net.WebUtility.UrlEncode(client.ClientId).Replace("\"", "\\\"") + ":<client-secret>\"" : "")
                         + " --data-urlencode \"token=<access-token>\"";
                     <div class="snippet" x-data="copier(@JsonSerializer.Serialize(introspection))">
                         <div class="snippet-head"><span>Token introspection — @(client.RequireIntrospectionBasicAuthentication ? "replace the secret and access-token placeholders" : "replace the access-token placeholder; no credentials required")</span><button type="button" class="chip-btn" x-on:click="copy()" x-text="copied ? 'Copied' : 'Copy'">Copy</button></div>
                         <pre><code>@introspection</code></pre>
                     </div>
-                    <p class="help">Inspect user or application access tokens issued to this client. Invalid, expired, or inaccessible tokens return active: false. Form-based client-secret authentication is not supported by introspection.</p>
+                    <p class="help">With Basic authentication, inspect user or application access tokens whose audience includes this client's ID, even if another client acquired them. Anonymous inspection follows the issuing client's setting. Invalid, expired, or inaccessible tokens return active: false. Form-based client-secret authentication is not supported by introspection.</p>
                 }
                 else
                 {
-                    <p class="help">Introspection requires confidential-client authentication. Validate signed JWT access tokens locally using the issuer, audience, expiry and public keys from <a href="@clientDiscovery">discovery</a> / <a href="/oauth/v2/jwks">JWKS</a>.</p>
+                    <p class="help">Introspection requires confidential-client authentication. Set this SPA's access-token audiences to the target server's Client ID; that server can introspect using its own Basic credentials. The SPA never needs the server's secret. Servers can also validate signed JWT access tokens locally using the issuer, audience, expiry and public keys from <a href="@clientDiscovery">discovery</a> / <a href="@Url.Content("~/oauth/v2/jwks")">JWKS</a>.</p>
                 }
             </div>
         </section>

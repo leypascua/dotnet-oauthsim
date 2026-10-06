@@ -6,7 +6,7 @@ using OAuthSim.Web.Services;
 
 namespace OAuthSim.Web.Controllers;
 
-public sealed record AdminViewModel(SimulatorSettings Settings, string FilePath, string Issuer, string? Error = null, string? Message = null);
+public sealed record AdminViewModel(SimulatorSettings Settings, string FilePath, string BaseUrl, string? Error = null, string? Message = null);
 public sealed record UserFormModel(string Client, MockUser User, bool IsNew = false);
 
 public sealed class AdminController(SettingsStore store, TokenService tokens, CountryLanguageCatalog catalog,
@@ -44,7 +44,8 @@ public sealed class AdminController(SettingsStore store, TokenService tokens, Co
             client.ClientId = clientId;
             client.Name = string.IsNullOrWhiteSpace(name) ? clientId : name.Trim();
             if (Request.Form.ContainsKey("issuer")) client.Issuer = issuer;
-            if (Request.Form.ContainsKey("accessTokenAudience")) client.AccessTokenAudience = accessTokenAudience;
+            if (Request.Form.ContainsKey("accessTokenAudience"))
+                client.AccessTokenAudience = new TokenAudience((accessTokenAudience ?? "").Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)).Normalize();
             client.IsPublic = isPublic; client.Enabled = enabled;
             if (requireIntrospectionBasicAuthentication.HasValue)
                 client.RequireIntrospectionBasicAuthentication = requireIntrospectionBasicAuthentication.Value;
@@ -91,7 +92,7 @@ public sealed class AdminController(SettingsStore store, TokenService tokens, Co
         s.CodeLifetimeSeconds = codeLifetimeSeconds; s.TokenLifetimeSeconds = tokenLifetimeSeconds; s.RefreshLifetimeSeconds = refreshLifetimeSeconds;
     }), "Token lifetimes saved.");
 
-    private AdminViewModel Model(string? error = null, string? message = null) => new(store.Read(), store.FilePath, tokens.Issuer, error, message);
+    private AdminViewModel Model(string? error = null, string? message = null) => new(store.Read(), store.FilePath, tokens.BaseUrl, error, message);
     private static Dictionary<string, Dictionary<string, JsonElement>> ParseClaims(string? claims)
     {
         var result = string.IsNullOrWhiteSpace(claims) ? [] : JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, JsonElement>>>(claims)

@@ -2,7 +2,7 @@
 @inject OAuthSim.Web.Services.CountryLanguageCatalog Catalog
 @using System.Text.Json
 @{ var countries = JsonSerializer.Serialize(Catalog.Countries, new JsonSerializerOptions(JsonSerializerDefaults.Web)); }
-<form asp-action="SaveUser" method="post" hx-post="/Admin/SaveUser" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(Model.User.Country), @JsonSerializer.Serialize(Model.User.Language))">
+<form asp-action="SaveUser" method="post" hx-post="@Url.Action("SaveUser", "Admin")" class="form" x-data="localePicker(@countries, @JsonSerializer.Serialize(Model.User.Country), @JsonSerializer.Serialize(Model.User.Language))">
     <input type="hidden" name="client" value="@Model.Client" /><input type="hidden" name="id" value="@(Model.IsNew ? "" : Model.User.Id)" />
     <div class="grid-2">
         <label class="label">Email<input class="input" type="email" name="email" value="@Model.User.Email" placeholder="person@example.com" required /></label>

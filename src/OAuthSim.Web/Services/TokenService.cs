@@ -41,12 +41,13 @@ public sealed class TokenService : IDisposable
         rsa.ImportPkcs8PrivateKey(Convert.FromBase64String(store.Read().SigningPrivateKey), out _);
     }
 
-    public string Issuer => $"http://localhost:{store.Read().Port}";
+    public string BaseUrl => HostingConfiguration.BaseUrl(store.Read());
+    public string Issuer => BaseUrl;
 
     public static string ResolveIssuer(OAuthClient client, string defaultIssuer) =>
         string.IsNullOrWhiteSpace(client.Issuer) ? defaultIssuer : client.Issuer.Trim();
-    public static string ResolveAccessTokenAudience(OAuthClient client) =>
-        string.IsNullOrWhiteSpace(client.AccessTokenAudience) ? client.ClientId : client.AccessTokenAudience.Trim();
+    public static TokenAudience ResolveAccessTokenAudience(OAuthClient client) =>
+        client.AccessTokenAudience?.Normalize() ?? new([client.ClientId]);
 
     public void InvalidateAll()
     {
@@ -91,7 +92,7 @@ public sealed class TokenService : IDisposable
                 {
                     Jwt = claims.Jwt with
                     {
-                        Issuer = ResolveIssuer(client, $"http://localhost:{settings.Port}"), Audience = grant.ClientId, IssuedAt = now,
+                        Issuer = ResolveIssuer(client, HostingConfiguration.BaseUrl(settings)), Audience = grant.ClientId, IssuedAt = now,
                         ExpiresAt = now + settings.TokenLifetimeSeconds
                     },
                     Authentication = new OidcAuthenticationClaims
@@ -156,9 +157,10 @@ public sealed class TokenService : IDisposable
             // Resolve identity expectations only from the signature-verified client_id,
             // never from a request parameter or the token's audience.
             var client = settings.Clients.FirstOrDefault(c => c.Enabled && c.ClientId == claims.Access.ClientId);
-            if (client is null || claims.Jwt.Issuer != ResolveIssuer(client, $"http://localhost:{settings.Port}") || claims.Simulator.TokenUse != "access"
+            if (client is null || claims.Jwt.Issuer != ResolveIssuer(client, HostingConfiguration.BaseUrl(settings)) || claims.Simulator.TokenUse != "access"
                 || claims.Jwt.ExpiresAt is not long expiresAt || expiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds()
                 || claims.Access.ClientId is null
+                || claims.Jwt.Audience is not { IsValid: true }
                 || claims.Jwt.Audience != ResolveAccessTokenAudience(client)) throw new FormatException();
             return new ValidatedAccessToken(claims);
         }
@@ -207,7 +209,7 @@ public sealed class TokenService : IDisposable
         {
             Jwt = claims.Jwt with
             {
-                Issuer = ResolveIssuer(client, $"http://localhost:{settings.Port}"), Audience = ResolveAccessTokenAudience(client), IssuedAt = now, ExpiresAt = now + lifetime,
+                Issuer = ResolveIssuer(client, HostingConfiguration.BaseUrl(settings)), Audience = ResolveAccessTokenAudience(client), IssuedAt = now, ExpiresAt = now + lifetime,
                 TokenId = Guid.NewGuid().ToString("N")
             },
             Access = new AccessTokenClaims { ClientId = client.ClientId, Scope = scope },

@@ -12,12 +12,12 @@
             <p class="welcome-dest">Returning you to <a id="destination" href="@Model.Request.RedirectUri">@(new Uri(Model.Request.RedirectUri).Authority)</a></p>
         </div>
     </div>
-    <form id="continue-form" action="/oauth/v2/continue" method="post">
+    <form id="continue-form" action="@Url.Content("~/oauth/v2/continue")" method="post">
         @Html.AntiForgeryToken()
         <input type="hidden" name="transactionId" value="@Model.Request.Id" />
         <button class="button is-primary is-fullwidth">Continue now</button>
     </form>
-    <form id="logout-form" action="/oauth/v2/logout" method="post">
+    <form id="logout-form" action="@Url.Content("~/oauth/v2/logout")" method="post">
         @Html.AntiForgeryToken()
         <input type="hidden" name="transactionId" value="@Model.Request.Id" />
         <button class="button is-ghost is-fullwidth">Log out</button>

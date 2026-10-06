@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -40,6 +41,19 @@ void Throws(Action action, string name)
 Check(Options.Parse(["--port", "42069", "--clientId=abc", "--no-browser"]).ClientId == "abc", "CLI accepts exact options and equals syntax");
 Throws(() => Options.Parse(["--port", "0"]), "CLI rejects invalid port");
 Throws(() => Options.Parse(["--unknown", "x"]), "CLI rejects unknown option");
+Check(Options.Parse(["--public-base-url=https://login.example.test/auth", "--trusted-proxy", "10.0.0.1", "--trusted-proxy=192.0.2.0/24", "--hosted"]) is
+    { PublicBaseUrl: "https://login.example.test/auth", Hosted: true, TrustedProxies.Length: 2 }, "CLI accepts public URL, hosted mode and repeated proxy addresses/networks");
+Throws(() => Options.Parse(["--hosted", "--port", "42069"]), "CLI rejects conflicting hosted and standalone port options");
+var iisContext = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+iisContext.Request.PathBase = "/oauthsim";
+iisContext.Request.Path = "/authorize";
+Check(HostingConfiguration.ApplyPathBase(iisContext, new() { PublicBaseUrl = "https://login.example.test/oauthsim" })
+    && iisContext.Request.PathBase == "/oauthsim" && iisContext.Request.Path == "/authorize", "IIS-supplied application path is preserved without applying the prefix twice");
+Check(!HostingConfiguration.ApplyPathBase(iisContext, new() { PublicBaseUrl = "https://login.example.test/other" }), "IIS application path must match configured public URL");
+var escapedPathContext = new Microsoft.AspNetCore.Http.DefaultHttpContext();
+escapedPathContext.Request.Path = "/tenant space/authorize";
+Check(HostingConfiguration.ApplyPathBase(escapedPathContext, new() { PublicBaseUrl = "https://login.example.test/tenant%20space" })
+    && escapedPathContext.Request.PathBase == "/tenant space" && escapedPathContext.Request.Path == "/authorize", "escaped public URL paths match decoded HTTP application paths");
 
 var storeDirectory = Path.Combine(directory, "store");
 using (var store = new SettingsStore(storeDirectory))
@@ -52,6 +66,13 @@ using (var store = new SettingsStore(storeDirectory))
     foreach (var invalidIssuer in new[] { "relative/path", "ftp://identity.example.com", "https://user:pass@identity.example.com", "https://identity.example.com?tenant=1", "https://identity.example.com#tenant" })
         Throws(() => store.Update(s => s.Clients[0].Issuer = invalidIssuer), "settings reject invalid issuer: " + invalidIssuer);
     Check(store.Read().Clients[0].Issuer is null, "invalid issuer updates leave settings intact");
+    foreach (var invalidBaseUrl in new[] { "relative/path", "ftp://login.example.test", "https://user:pass@login.example.test", "https://login.example.test?x=1", "https://login.example.test#fragment" })
+        Throws(() => store.Update(s => s.PublicBaseUrl = invalidBaseUrl), "settings reject invalid public base URL: " + invalidBaseUrl);
+    Throws(() => store.Update(s => s.TrustedProxies = ["any"]), "settings reject invalid trusted proxy");
+    Throws(() => store.Update(s => s.TrustedProxies = ["192.0.2.0/99"]), "settings reject invalid proxy network");
+    store.Update(s => { s.PublicBaseUrl = " https://login.example.test/auth/ "; s.TrustedProxies = [" 10.0.0.1 ", "192.0.2.0/24"]; });
+    Check(store.Read().PublicBaseUrl == "https://login.example.test/auth" && store.Read().TrustedProxies[0] == "10.0.0.1", "public URL and trusted proxies normalize whitespace and trailing slash");
+    store.Update(s => { s.PublicBaseUrl = null; s.TrustedProxies = []; });
     var auth = new AuthorizationService(store);
     var request = auth.Create("test-client", "http://localhost:3000/callback", ["openid", "email"], "state", "nonce", null, null, "query");
     var identity = new Identity("subject", "user@example.com", "User", "PH", "en", []);
@@ -135,6 +156,11 @@ using (var store = new SettingsStore(storeDirectory))
     Throws(() => tokenService.ValidateAccess(jwt), "global invalidation rejects old JWT");
     Throws(() => tokenService.Refresh(oldRefresh, "test-client", null), "global invalidation rejects old refresh token");
     Check(File.Exists(store.FilePath + ".bak"), "atomic settings writes retain backup");
+    store.Update(s => s.Clients[0].AccessTokenAudience = new TokenAudience([" orders-api ", "reports-api", "", "orders-api"]));
+    var machineMultiple = tokenService.IssueClientCredentials(store.Read().Clients[0], []);
+    Check(tokenService.ValidateAccess(machineMultiple.AccessToken).Jwt.Audience == new TokenAudience(["reports-api", "orders-api"])
+        && tokenService.ValidateAccess(machineMultiple.AccessToken).ToClaims()["aud"].GetArrayLength() == 2, "machine tokens issue and validate normalized audience sets");
+    Check(JsonDocument.Parse(File.ReadAllText(store.FilePath)).RootElement.GetProperty("clients")[0].GetProperty("accessTokenAudience").GetArrayLength() == 2, "multiple audience settings persist as an array");
     store.Update(s => { s.Clients[0].Issuer = " https://identity.example.com/tenant/ "; s.Clients[0].AccessTokenAudience = " orders-api "; });
 }
 using (var store = new SettingsStore(storeDirectory)) Check(store.Read().Clients[0].ClientSecret == "test-secret", "settings survive reopening");
@@ -158,6 +184,15 @@ var invalidIdentityJson = legacyDocument.ToJsonString();
 File.WriteAllText(Path.Combine(invalidIdentityDirectory, "settings.json"), invalidIdentityJson);
 Throws(() => { using var bad = new SettingsStore(invalidIdentityDirectory); }, "invalid persisted issuer prevents startup");
 Check(File.ReadAllText(Path.Combine(invalidIdentityDirectory, "settings.json")) == invalidIdentityJson, "invalid issuer settings are preserved on load failure");
+legacyDocument["clients"]![0]!.AsObject().Remove("issuer");
+foreach (var malformedAudience in new[] { "42", "{}", "[\"orders-api\",null]", "[true]" })
+{
+    legacyDocument["clients"]![0]!["accessTokenAudience"] = System.Text.Json.Nodes.JsonNode.Parse(malformedAudience);
+    var invalidAudienceJson = legacyDocument.ToJsonString();
+    File.WriteAllText(Path.Combine(invalidIdentityDirectory, "settings.json"), invalidAudienceJson);
+    Throws(() => { using var bad = new SettingsStore(invalidIdentityDirectory); }, "malformed persisted audience prevents startup: " + malformedAudience);
+    Check(File.ReadAllText(Path.Combine(invalidIdentityDirectory, "settings.json")) == invalidAudienceJson, "malformed audience settings are preserved on load failure");
+}
 var corruptDirectory = Path.Combine(directory, "corrupt");
 Directory.CreateDirectory(corruptDirectory);
 File.WriteAllText(Path.Combine(corruptDirectory, "settings.json"), "{broken");
@@ -174,7 +209,8 @@ var handler = new HttpClientHandler { AllowAutoRedirect = false, CookieContainer
 using var http = new HttpClient(handler) { BaseAddress = new Uri(baseUrl), Timeout = TimeSpan.FromSeconds(15) };
 var output = new StringBuilder();
 Process? server = null;
-Process Start(params string[] extra)
+Process Start(params string[] extra) => StartConfigured(null, extra);
+Process StartConfigured(Dictionary<string, string>? environment, params string[] extra)
 {
     var start = new ProcessStartInfo { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, WorkingDirectory = directory };
     if (args.Length > 0) start.FileName = Path.GetFullPath(args[0]);
@@ -186,6 +222,8 @@ Process Start(params string[] extra)
     start.ArgumentList.Add("--settings-dir"); start.ArgumentList.Add(settingsDirectory);
     start.ArgumentList.Add("--no-browser");
     foreach (var item in extra) start.ArgumentList.Add(item);
+    if (environment is not null)
+        foreach (var pair in environment) start.Environment[pair.Key] = pair.Value;
     var process = Process.Start(start)!;
     process.OutputDataReceived += (_, e) => { lock (output) output.AppendLine(e.Data); };
     process.ErrorDataReceived += (_, e) => { lock (output) output.AppendLine(e.Data); };
@@ -587,11 +625,17 @@ try
     Check(Payload(identityMachine).GetProperty("iss").GetString() == customIssuer && Payload(identityMachine).GetProperty("aud").GetString() == customAudience
         && Payload(identityMachine).GetProperty("client_id").GetString() == "test-client", "machine tokens keep client identity distinct from API audience");
     Check((await Userinfo(identityAccess)).StatusCode == HttpStatusCode.OK, "userinfo validates custom token identity");
+    Check((await Post("/Admin/SaveClient", new()
+    {
+        ["clientId"] = customAudience, ["clientSecret"] = "api-secret", ["enabled"] = "true"
+    }, true)).StatusCode == HttpStatusCode.Redirect, "admin registers confidential resource server separately from issuing client");
     foreach (var path in new[] { "/introspect", "/oauth/v2/introspect" })
     {
-        var inspectedIdentity = await Json(await Introspect(identityAccess, path: path));
+        var inspectedIdentity = await Json(await Introspect(identityAccess, client: customAudience, secret: "api-secret", path: path));
         Check(inspectedIdentity.GetProperty("active").GetBoolean() && inspectedIdentity.GetProperty("iss").GetString() == customIssuer
-            && inspectedIdentity.GetProperty("aud").GetString() == customAudience, "Basic introspection validates custom issuer/audience: " + path);
+            && inspectedIdentity.GetProperty("aud").GetString() == customAudience
+            && inspectedIdentity.GetProperty("client_id").GetString() == "test-client", "resource server introspects custom issuer/audience without replacing issuing client: " + path);
+        Check((await Json(await Introspect(identityAccess, path: path))).GetRawText() == "{\"active\":false}", "issuing client without audience match cannot introspect: " + path);
         Check((await Json(await AnonymousIntrospect(identityMachine, path))).GetProperty("active").GetBoolean(), "anonymous introspection resolves client independently of custom audience: " + path);
     }
     foreach (var field in new[] { "iss", "aud" })
@@ -611,7 +655,7 @@ try
     Check((await Json(await http.GetAsync("/.well-known/openid-configuration"))).GetProperty("issuer").GetString() == baseUrl,
         "default discovery remains canonical with a custom client issuer");
     await SaveTokenIdentity();
-    Check((await Json(await Introspect(identityAccess))).GetProperty("active").GetBoolean(), "omitted identity form fields preserve overrides");
+    Check((await Json(await Introspect(identityAccess, client: customAudience, secret: "api-secret"))).GetProperty("active").GetBoolean(), "omitted identity form fields preserve overrides");
     await RunOidc(customIssuer);
 
     await SaveTokenIdentity("https://identity.example.com/changed", "new-api");
@@ -625,12 +669,14 @@ try
     Check(Payload(identityRefreshed.GetProperty("access_token").GetString()!).GetProperty("iss").GetString() == "https://identity.example.com/changed"
         && Payload(identityRefreshed.GetProperty("access_token").GetString()!).GetProperty("aud").GetString() == "new-api"
         && Payload(identityRefreshed.GetProperty("id_token").GetString()!).GetProperty("aud").GetString() == "test-client"
-        && (await Json(await Introspect(identityRefreshed.GetProperty("access_token").GetString()!))).GetProperty("active").GetBoolean(), "refresh uses current issuer/audience while retaining ID-token audience");
+        && (await Json(await AnonymousIntrospect(identityRefreshed.GetProperty("access_token").GetString()!))).GetProperty("active").GetBoolean(), "refresh uses current issuer/audience while retaining ID-token audience");
     await SaveTokenIdentity(customIssuer, customAudience);
     Stop(); server = Start(); await Ready();
     Check((await Json(await http.GetAsync(clientMetadataUrl))).GetProperty("issuer").GetString() == customIssuer
         && (await Json(await AnonymousIntrospect(identityMachine))).GetProperty("aud").GetString() == customAudience,
         "issuer and audience overrides persist across restart with access-token validity");
+    var apiInternalId = JsonDocument.Parse(File.ReadAllText(Path.Combine(settingsDirectory, "settings.json"))).RootElement.GetProperty("clients")[1].GetProperty("id").GetString()!;
+    Check((await Post("/Admin/DeleteClient", new() { ["id"] = apiInternalId }, true)).StatusCode == HttpStatusCode.Redirect, "temporary resource server deleted");
 
     Check((await Post("/Admin/SaveClient", new()
     {
@@ -640,7 +686,7 @@ try
     var otherMachine = (await Json(await Post("/token", MachineFields(client: "identity-other", secret: "other-secret")))).GetProperty("access_token").GetString()!;
     Check((await Json(await Introspect(otherMachine))).GetRawText() == "{\"active\":false}"
         && (await AnonymousIntrospect(otherMachine)).StatusCode == HttpStatusCode.Unauthorized,
-        "shared API audience does not bypass introspection ownership or select another client's OFF policy");
+        "shared API audience does not authorize a non-audience caller or select another client's OFF policy");
     var wrongClientIssuer = System.Text.Json.Nodes.JsonNode.Parse(Payload(identityAccess).GetRawText())!;
     wrongClientIssuer["iss"] = "https://other.example.com/";
     Check((await Json(await Introspect(SignInspectionToken(wrongClientIssuer.ToJsonString())))).GetRawText() == "{\"active\":false}",
@@ -684,6 +730,16 @@ try
     Check((await AnonymousIntrospect(publicAccess)).StatusCode == HttpStatusCode.Unauthorized, "public client's ON switch rejects anonymous introspection");
     settings = JsonDocument.Parse(File.ReadAllText(Path.Combine(settingsDirectory, "settings.json"))).RootElement;
     var publicInternalId = settings.GetProperty("clients")[1].GetProperty("id").GetString()!;
+    Check(Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("nonce").GetString() == "reused-nonce", "session reuse preserves PKCE and nonce");
+    var cookieGrantAuthTime = Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("auth_time").GetInt64();
+    await Task.Delay(1100);
+    var silent = await http.GetAsync(QueryHelpers.AddQueryString(cookiePkceUrl, "prompt", "none"));
+    var silentFields = ExchangeFields(QueryHelpers.ParseQuery(silent.Headers.Location!.Query)["code"].ToString(), "public-client", "", verifier); silentFields.Remove("client_secret");
+    var silentTokens = await Json(await Post("/token", silentFields));
+    Check(Payload(silentTokens.GetProperty("id_token").GetString()!).GetProperty("auth_time").GetInt64() == cookieGrantAuthTime, "silent session reuse retains original authentication time");
+    var badPkce = await Login("public-client", scope: "openid", pkce: challenge);
+    var badFields = ExchangeFields(badPkce.Code, "public-client", "", new string('x', 43)); badFields.Remove("client_secret");
+    Check((await Json(await Post("/token", badFields))).GetProperty("error").GetString() == "invalid_grant", "wrong PKCE verifier rejected");
     async Task SavePublicIntrospection(bool requireBasic)
     {
         // The checkbox and hidden fallback submit true,false when checked.
@@ -696,6 +752,89 @@ try
         fields.Add(new("requireIntrospectionBasicAuthentication", "false"));
         Check((await http.PostAsync("/Admin/SaveClient", new FormUrlEncodedContent(fields))).StatusCode == HttpStatusCode.Redirect, "admin saves introspection checkbox with hidden fallback");
     }
+    async Task SavePublicAudience(string audiences)
+    {
+        Check((await Post("/Admin/SaveClient", new()
+        {
+            ["id"] = publicInternalId, ["clientId"] = "public-client", ["isPublic"] = "true", ["enabled"] = "true",
+            ["accessTokenAudience"] = audiences
+        }, true)).StatusCode == HttpStatusCode.Redirect, "admin configures SPA audiences");
+    }
+    async Task<JsonElement> IssuePublicTokens()
+    {
+        var login = await Login("public-client", scope: "openid email offline_access", pkce: challenge);
+        var fields = ExchangeFields(login.Code, "public-client", "", verifier); fields.Remove("client_secret");
+        return await Json(await Post("/token", fields));
+    }
+    await SavePublicAudience(" test-client ");
+    var spaSingle = await IssuePublicTokens();
+    var spaSingleAccess = spaSingle.GetProperty("access_token").GetString()!;
+    Check(Payload(spaSingleAccess).GetProperty("aud").GetString() == "test-client"
+        && Payload(spaSingle.GetProperty("id_token").GetString()!).GetProperty("aud").GetString() == "public-client", "SPA target audience is independent of ID-token audience");
+    foreach (var path in new[] { "/introspect", "/oauth/v2/introspect" })
+    {
+        var response = await Introspect(spaSingleAccess, path: path);
+        var claims = await Json(response);
+        Check(claims.GetProperty("active").GetBoolean() && claims.GetProperty("client_id").GetString() == "public-client"
+            && claims.GetProperty("email").GetString() == "person@example.com", "confidential server introspects SPA PKCE token and profile claims: " + path);
+        Check(response.Headers.CacheControl?.NoStore == true && response.Headers.Pragma.Any(p => p.Name == "no-cache"), "cross-client introspection is non-cacheable");
+    }
+    Check((await AnonymousIntrospect(spaSingleAccess)).StatusCode == HttpStatusCode.Unauthorized, "audience authorization does not relax SPA anonymous policy");
+    Check((await Introspect(spaSingleAccess, secret: "wrong")).StatusCode == HttpStatusCode.Unauthorized, "cross-client introspection requires valid server credentials");
+    Check((await Post("/Admin/SaveClient", new()
+    {
+        ["clientId"] = "reports-api", ["clientSecret"] = "reports-secret", ["enabled"] = "true"
+    }, true)).StatusCode == HttpStatusCode.Redirect, "admin creates second SPA resource server");
+    await SavePublicAudience(" test-client \r\n reports-api\n\n test-client ");
+    var spaMultiple = await IssuePublicTokens();
+    var spaMultipleAccess = spaMultiple.GetProperty("access_token").GetString()!;
+    var multiplePayload = Payload(spaMultipleAccess);
+    Check(multiplePayload.GetProperty("aud").EnumerateArray().Select(a => a.GetString()).SequenceEqual(new[] { "test-client", "reports-api" }), "SPA multi-audience issuance trims, deduplicates and emits an array");
+    Check((await Json(await Introspect(spaSingleAccess))).GetRawText() == "{\"active\":false}", "audience-set edits invalidate existing single-audience tokens");
+    foreach (var path in new[] { "/introspect", "/oauth/v2/introspect" })
+    {
+        Check((await Json(await Introspect(spaMultipleAccess, path: path))).GetProperty("active").GetBoolean(), "first audience can introspect SPA multi-audience token: " + path);
+        var inspectedMultiple = await Json(await Introspect(spaMultipleAccess, "reports-api", "reports-secret", path: path));
+        Check(inspectedMultiple.GetProperty("active").GetBoolean() && inspectedMultiple.GetProperty("aud").GetArrayLength() == 2
+            && inspectedMultiple.GetProperty("client_id").GetString() == "public-client", "second audience receives typed SPA token claims: " + path);
+    }
+    foreach (var invalidAudience in new[] { "[]", "[\"test-client\",1]", "[\"test-client\",null]", "[\"test-client\",\"\"]", "42", "null", "\"test-client\"", "[\"Test-client\",\"reports-api\"]", "[\"test-client\",\"reports-api\",\"extra-api\"]" })
+    {
+        var invalidPayload = System.Text.Json.Nodes.JsonNode.Parse(multiplePayload.GetRawText())!;
+        invalidPayload["aud"] = System.Text.Json.Nodes.JsonNode.Parse(invalidAudience);
+        var invalidToken = SignInspectionToken(invalidPayload.ToJsonString());
+        Check((await Json(await Introspect(invalidToken))).GetRawText() == "{\"active\":false}"
+            && (await Userinfo(invalidToken)).StatusCode == HttpStatusCode.Unauthorized, "signed malformed or mismatched audience is rejected: " + invalidAudience);
+    }
+    var reorderedPayload = System.Text.Json.Nodes.JsonNode.Parse(multiplePayload.GetRawText())!;
+    reorderedPayload["aud"] = System.Text.Json.Nodes.JsonNode.Parse("[\"reports-api\",\"test-client\"]");
+    Check((await Json(await Introspect(SignInspectionToken(reorderedPayload.ToJsonString())))).GetProperty("active").GetBoolean(), "audience-set validation is order independent");
+    await SavePublicIntrospection(false); // Omits the audience field.
+    Check((await Json(await Introspect(spaMultipleAccess))).GetProperty("active").GetBoolean()
+        && (await Json(await AnonymousIntrospect(spaMultipleAccess))).GetProperty("active").GetBoolean(), "omitted admin audience preserves array and anonymous OFF policy");
+    await SavePublicIntrospection(true);
+    Stop(); server = Start(); await Ready();
+    Check((await Json(await Introspect(spaMultipleAccess, "reports-api", "reports-secret"))).GetProperty("active").GetBoolean(), "SPA audience arrays and server credentials survive restart");
+    await SavePublicAudience("reports-api\ntest-client");
+    var spaRefresh = await Json(await Post("/token", new()
+    {
+        ["grant_type"] = "refresh_token", ["client_id"] = "public-client",
+        ["refresh_token"] = (await IssuePublicTokens()).GetProperty("refresh_token").GetString()!
+    }));
+    Check(Payload(spaRefresh.GetProperty("access_token").GetString()!).GetProperty("aud").GetArrayLength() == 2
+        && Payload(spaRefresh.GetProperty("id_token").GetString()!).GetProperty("aud").GetString() == "public-client", "SPA refresh retains multi-audience access and single-audience ID tokens");
+    var reportsInternalId = JsonDocument.Parse(File.ReadAllText(Path.Combine(settingsDirectory, "settings.json"))).RootElement.GetProperty("clients")[2].GetProperty("id").GetString()!;
+    Check((await Post("/Admin/SaveClient", new()
+    {
+        ["id"] = reportsInternalId, ["clientId"] = "reports-api", ["clientSecret"] = "reports-secret", ["enabled"] = "false"
+    }, true)).StatusCode == HttpStatusCode.Redirect
+        && (await Introspect(spaMultipleAccess, "reports-api", "reports-secret")).StatusCode == HttpStatusCode.Unauthorized, "disabled audience caller cannot introspect");
+    Check((await Post("/Admin/DeleteClient", new() { ["id"] = reportsInternalId }, true)).StatusCode == HttpStatusCode.Redirect, "temporary second resource server deleted");
+    await SavePublicAudience("Test-client");
+    var caseToken = (await IssuePublicTokens()).GetProperty("access_token").GetString()!;
+    Check((await Json(await Introspect(caseToken))).GetRawText() == "{\"active\":false}", "introspection audience membership is case sensitive");
+    await SavePublicAudience(" \t ");
+    Check((await Json(await Introspect(spaMultipleAccess))).GetRawText() == "{\"active\":false}", "clearing SPA audiences restores fallback and invalidates previous array tokens");
     await SavePublicIntrospection(false);
     foreach (var path in new[] { "/introspect", "/oauth/v2/introspect" })
     {
@@ -708,20 +847,10 @@ try
     Check((await http.GetStringAsync("/")).Contains("no credentials required"), "admin integration reflects OFF mode");
     Check((await AnonymousIntrospect(access, claimedClient: "public-client")).StatusCode == HttpStatusCode.Unauthorized, "anonymous client_id cannot select another client's OFF policy");
     Check((await Introspect(publicAccess, secret: "wrong")).StatusCode == HttpStatusCode.Unauthorized, "invalid supplied Basic cannot fall back to OFF anonymous mode");
-    Check((await Json(await Introspect(publicAccess))).GetRawText() == "{\"active\":false}", "valid Basic still enforces token ownership when token owner's switch is OFF");
+    Check((await Json(await Introspect(publicAccess))).GetRawText() == "{\"active\":false}", "valid Basic still requires an audience match when issuing client's switch is OFF");
     await SavePublicIntrospection(true);
     Check((await AnonymousIntrospect(publicAccess)).StatusCode == HttpStatusCode.Unauthorized, "turning switch back ON takes effect immediately");
     await SavePublicIntrospection(false);
-    Check(Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("nonce").GetString() == "reused-nonce", "session reuse preserves PKCE and nonce");
-    var cookieGrantAuthTime = Payload(cookieTokens.GetProperty("id_token").GetString()!).GetProperty("auth_time").GetInt64();
-    await Task.Delay(1100);
-    var silent = await http.GetAsync(QueryHelpers.AddQueryString(cookiePkceUrl, "prompt", "none"));
-    var silentFields = ExchangeFields(QueryHelpers.ParseQuery(silent.Headers.Location!.Query)["code"].ToString(), "public-client", "", verifier); silentFields.Remove("client_secret");
-    var silentTokens = await Json(await Post("/token", silentFields));
-    Check(Payload(silentTokens.GetProperty("id_token").GetString()!).GetProperty("auth_time").GetInt64() == cookieGrantAuthTime, "silent session reuse retains original authentication time");
-    var badPkce = await Login("public-client", scope: "openid", pkce: challenge);
-    var badFields = ExchangeFields(badPkce.Code, "public-client", "", new string('x', 43)); badFields.Remove("client_secret");
-    Check((await Json(await Post("/token", badFields))).GetProperty("error").GetString() == "invalid_grant", "wrong PKCE verifier rejected");
     Check((await Post("/Admin/SaveUser", new()
     {
         ["client"] = internalId, ["email"] = "configured@example.com", ["name"] = "Configured user", ["country"] = "PH", ["language"] = "en", ["enabled"] = "true", ["claims"] = "{\"roles\":{\"role\":\"tester\",\"iss\":\"override\"}}"
@@ -912,6 +1041,139 @@ try
             if (!fallback.HasExited) fallback.Kill(true);
             await fallback.WaitForExitAsync();
         }
+    }
+    Stop();
+    var proxyDirectory = Path.Combine(directory, "proxy");
+    const string publicBaseUrl = "https://login.example.test/oauthsim";
+    using var proxyHttp = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }) { BaseAddress = new Uri(baseUrl) };
+    server = Start("--settings-dir", proxyDirectory, "--port", port.ToString(), "--clientId", "proxy-client", "--clientSecret", "proxy-secret", "--public-base-url", publicBaseUrl + "/");
+    await Ready();
+    async Task<HttpResponseMessage> Forward(string path, Dictionary<string, string>? fields = null, string? cookies = null,
+        string forwardedHost = "login.example.test", bool htmx = false)
+    {
+        using var request = new HttpRequestMessage(fields is null ? HttpMethod.Get : HttpMethod.Post, path);
+        request.Headers.Host = "backend.internal";
+        request.Headers.Add("X-Forwarded-Host", forwardedHost);
+        request.Headers.Add("X-Forwarded-Proto", "https");
+        request.Headers.Add("X-Forwarded-For", "203.0.113.12");
+        if (cookies is not null) request.Headers.Add("Cookie", cookies);
+        if (htmx) request.Headers.Add("HX-Request", "true");
+        if (fields is not null) request.Content = new FormUrlEncodedContent(fields);
+        return await proxyHttp.SendAsync(request);
+    }
+    static string ResponseCookies(HttpResponseMessage response) => string.Join("; ", response.Headers.GetValues("Set-Cookie")
+        .Select(c => c.Split(';')[0]).GroupBy(c => c.Split('=')[0]).Select(g => g.Last()));
+    var proxyMetadata = await Json(await Forward("/oauthsim/.well-known/openid-configuration"));
+    Check(proxyMetadata.GetProperty("issuer").GetString() == publicBaseUrl
+        && proxyMetadata.GetProperty("authorization_endpoint").GetString() == publicBaseUrl + "/oauth/v2/authorize"
+        && proxyMetadata.GetProperty("token_endpoint").GetString() == publicBaseUrl + "/oauth/v2/token"
+        && proxyMetadata.GetProperty("userinfo_endpoint").GetString() == publicBaseUrl + "/oauth/v2/userinfo"
+        && proxyMetadata.GetProperty("introspection_endpoint").GetString() == publicBaseUrl + "/oauth/v2/introspect"
+        && proxyMetadata.GetProperty("jwks_uri").GetString() == publicBaseUrl + "/oauth/v2/jwks", "proxy discovery publishes configured HTTPS hostname and path for issuer and every endpoint");
+    Check((await Forward("/.well-known/openid-configuration")).IsSuccessStatusCode, "proxy can strip the configured application prefix");
+    Check((await Forward("/oauthsim/.well-known/openid-configuration", forwardedHost: "attacker.example.test")).StatusCode == HttpStatusCode.BadRequest, "unconfigured forwarded hostname is rejected");
+    using (var badHost = new HttpRequestMessage(HttpMethod.Get, "/oauthsim/.well-known/openid-configuration"))
+    {
+        badHost.Headers.Host = "attacker.example.test";
+        Check((await http.SendAsync(badHost)).StatusCode == HttpStatusCode.BadRequest, "unconfigured direct hostname is rejected");
+    }
+    var proxyAdminResponse = await Forward("/oauthsim/");
+    var proxyAdmin = await proxyAdminResponse.Content.ReadAsStringAsync();
+    Check(proxyAdminResponse.IsSuccessStatusCode && proxyAdmin.Contains("hx-post=\"/oauthsim/Admin/SaveClient\"")
+        && proxyAdmin.Contains("hx-post=\"/oauthsim/Admin/SaveUser\"") && proxyAdmin.Contains("href=\"/oauthsim/\"")
+        && proxyAdmin.Contains(publicBaseUrl + "/oauth/v2/token"), "proxy admin renders prefixed actions, navigation and public integration URLs");
+    Check(proxyAdminResponse.Headers.GetValues("Set-Cookie").Any(c => c.Contains("path=/oauthsim") && c.Contains("secure")), "forwarded HTTPS scopes and secures antiforgery cookie");
+    var savedProxySettings = await Forward("/oauthsim/Admin/SaveSettings", new()
+    {
+        ["__RequestVerificationToken"] = Field(proxyAdmin, "__RequestVerificationToken"),
+        ["codeLifetimeSeconds"] = "300", ["tokenLifetimeSeconds"] = "3600", ["refreshLifetimeSeconds"] = "2592000"
+    }, ResponseCookies(proxyAdminResponse), htmx: true);
+    Check(savedProxySettings.IsSuccessStatusCode && (await savedProxySettings.Content.ReadAsStringAsync()).Contains("Token lifetimes saved."), "prefixed HTMX admin save validates forwarded HTTPS antiforgery token");
+    var proxyLoginUrl = QueryHelpers.AddQueryString("/oauthsim/authorize", new Dictionary<string, string?>
+    {
+        ["response_type"] = "code", ["client_id"] = "proxy-client", ["redirect_uri"] = callback,
+        ["scope"] = "openid profile email offline_access", ["nonce"] = "proxy-nonce"
+    });
+    var proxyLoginResponse = await Forward(proxyLoginUrl);
+    var proxyLoginHtml = await proxyLoginResponse.Content.ReadAsStringAsync();
+    Check(proxyLoginHtml.Contains("action=\"/oauthsim/oauth/v2/authorize\""), "proxy login form posts within application prefix");
+    var completedProxyLogin = await Forward("/oauthsim/oauth/v2/authorize", new()
+    {
+        ["__RequestVerificationToken"] = Field(proxyLoginHtml, "__RequestVerificationToken"),
+        ["transactionId"] = Field(proxyLoginHtml, "transactionId"), ["email"] = "proxy@example.com",
+        ["country"] = "PH", ["language"] = "en", ["scopes"] = "openid profile email offline_access", ["decision"] = "allow"
+    }, ResponseCookies(proxyLoginResponse));
+    Check(completedProxyLogin.StatusCode == HttpStatusCode.Redirect && completedProxyLogin.Headers.GetValues("Set-Cookie")
+        .Any(c => c.StartsWith("OAuthSim.Login.") && c.Contains("max-age=900") && c.Contains("path=/oauthsim") && c.Contains("secure")), "proxy authorization completes with secure path-scoped session cookie");
+    var proxyCode = QueryHelpers.ParseQuery(completedProxyLogin.Headers.Location!.Query)["code"].ToString();
+    var proxyTokens = await Json(await Forward("/oauthsim/token", ExchangeFields(proxyCode, "proxy-client", "proxy-secret")));
+    var proxyAccess = proxyTokens.GetProperty("access_token").GetString()!;
+    Check(Payload(proxyAccess).GetProperty("iss").GetString() == publicBaseUrl
+        && Payload(proxyTokens.GetProperty("id_token").GetString()!).GetProperty("iss").GetString() == publicBaseUrl,
+        "proxy code exchange issues access and ID tokens with stable public issuer");
+    var proxyWelcome = await (await Forward(proxyLoginUrl, cookies: ResponseCookies(completedProxyLogin))).Content.ReadAsStringAsync();
+    Check(proxyWelcome.Contains("Welcome back, proxy!") && proxyWelcome.Contains("action=\"/oauthsim/oauth/v2/continue\"")
+        && proxyWelcome.Contains("action=\"/oauthsim/oauth/v2/logout\""), "proxy login reuse renders prefixed continue and logout actions");
+    var proxyMachine = await Json(await Forward("/oauthsim/oauth/v2/token", new()
+    {
+        ["grant_type"] = "client_credentials", ["client_id"] = "proxy-client", ["client_secret"] = "proxy-secret"
+    }));
+    Check(Payload(proxyMachine.GetProperty("access_token").GetString()!).GetProperty("iss").GetString() == publicBaseUrl, "proxy machine tokens use public issuer");
+    var proxyRefreshed = await Json(await Forward("/oauthsim/token", new()
+    {
+        ["grant_type"] = "refresh_token", ["client_id"] = "proxy-client", ["client_secret"] = "proxy-secret",
+        ["refresh_token"] = proxyTokens.GetProperty("refresh_token").GetString()!
+    }));
+    Check(Payload(proxyRefreshed.GetProperty("access_token").GetString()!).GetProperty("iss").GetString() == publicBaseUrl, "proxy refreshed tokens use public issuer");
+    using (var proxyUserinfo = new HttpRequestMessage(HttpMethod.Get, "/oauthsim/userinfo"))
+    {
+        proxyUserinfo.Headers.Authorization = new("Bearer", proxyAccess);
+        Check((await http.SendAsync(proxyUserinfo)).IsSuccessStatusCode, "public-issuer token validates over local backend without forwarded headers");
+    }
+    Check(output.ToString().Contains("Admin:     " + publicBaseUrl + "/"), "startup prints public URL rather than backend listener");
+    Stop(); server = Start("--settings-dir", proxyDirectory, "--port", port.ToString(), "--trusted-proxy", "192.0.2.0/24"); await Ready();
+    Check((await Forward("/oauthsim/.well-known/openid-configuration")).StatusCode == HttpStatusCode.BadRequest, "forwarded scheme and hostname from an untrusted proxy are ignored");
+    Check((await Json(await http.GetAsync("/oauthsim/.well-known/openid-configuration"))).GetProperty("issuer").GetString() == publicBaseUrl,
+        "saved public URL survives restart and ignores request origin");
+    Stop();
+    using (var proxyStore = new SettingsStore(proxyDirectory))
+        Check(proxyStore.Read().PublicBaseUrl == publicBaseUrl && proxyStore.Read().TrustedProxies.SequenceEqual(new[] { "192.0.2.0/24" }), "public URL and trusted proxy networks persist independently of backend port");
+    server = Start("--settings-dir", proxyDirectory, "--port", port.ToString(), "--trusted-proxy", "127.0.0.0/8"); await Ready();
+    Check((await Forward("/oauthsim/.well-known/openid-configuration")).IsSuccessStatusCode, "forwarded headers from a configured trusted CIDR network are accepted");
+    Stop();
+
+    // Exercise native HTTPS and multiple ASP.NET Core listeners without assuming one Kestrel address.
+    listener.Start();
+    var tlsPort = ((IPEndPoint)listener.LocalEndpoint).Port;
+    listener.Stop();
+    var certificatePath = Path.Combine(directory, "https.pfx");
+    using (var certificateKey = RSA.Create(2048))
+    {
+        var certificateRequest = new CertificateRequest("CN=localhost", certificateKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        File.WriteAllBytes(certificatePath, certificate.Export(X509ContentType.Pfx, "test-password"));
+    }
+    var nativeBaseUrl = $"https://login.example.test:{tlsPort}/oauthsim";
+    var nativeBindings = new Dictionary<string, string>
+    {
+        ["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port};https://127.0.0.1:{tlsPort}",
+        ["Kestrel__Certificates__Default__Path"] = certificatePath, ["Kestrel__Certificates__Default__Password"] = "test-password"
+    };
+    server = StartConfigured(nativeBindings, "--settings-dir", proxyDirectory, "--hosted", "--public-base-url", nativeBaseUrl);
+    await Ready();
+    using (var tlsHandler = new HttpClientHandler { ServerCertificateCustomValidationCallback = (_, _, _, _) => true })
+    using (var tlsHttp = new HttpClient(tlsHandler))
+    {
+        tlsHttp.DefaultRequestHeaders.Host = $"login.example.test:{tlsPort}";
+        var nativeMetadata = await Json(await tlsHttp.GetAsync($"https://localhost:{tlsPort}/oauthsim/.well-known/openid-configuration"));
+        Check(nativeMetadata.GetProperty("issuer").GetString() == nativeBaseUrl && nativeMetadata.GetProperty("token_endpoint").GetString() == nativeBaseUrl + "/oauth/v2/token",
+            "hosted HTTPS with multiple listeners advertises configured custom hostname");
+        var nativeAdmin = await tlsHttp.GetAsync($"https://localhost:{tlsPort}/oauthsim/");
+        Check(nativeAdmin.IsSuccessStatusCode && nativeAdmin.Headers.GetValues("Set-Cookie").Any(c => c.Contains("secure") && c.Contains("path=/oauthsim")),
+            "native HTTPS administration emits secure path-scoped cookies without forwarded headers");
+        Stop(); server = StartConfigured(nativeBindings, "--settings-dir", proxyDirectory); await Ready();
+        Check((await tlsHttp.GetAsync($"https://localhost:{tlsPort}/oauthsim/.well-known/openid-configuration")).IsSuccessStatusCode,
+            "explicit ASP.NET Core bindings are detected automatically with a saved public URL");
     }
     Console.WriteLine($"\n{checks} checks passed.");
 }
